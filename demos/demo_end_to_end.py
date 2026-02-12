@@ -56,9 +56,9 @@ def main():
     token_tracker = get_global_tracker()
     reset_global_tracker()
 
-    print_header("END-TO-END AGENTIC WORKFLOW COMPLIANCE SYSTEM DEMO")
+    print_header("END-TO-END AGENTIC COMPLIANCE SYSTEM DEMO")
     print("This demo demonstrates the complete compliance run by agents :")
-    print("  • Data collection from NetSuite")
+    print("  • Data collection from SaaS platform (NetSuite)")
     print("  • SOD violation detection")
     print("  • Risk assessment and scoring")
     print("  • Knowledge base queries")

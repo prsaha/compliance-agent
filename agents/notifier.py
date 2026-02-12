@@ -16,8 +16,7 @@ from datetime import datetime
 from enum import Enum
 import json
 
-from langchain_anthropic import ChatAnthropic
-from langchain_core.prompts import ChatPromptTemplate
+from services.llm import get_llm_from_config, LLMMessage
 
 from models.database import (
     Notification, NotificationChannel, NotificationStatus,
@@ -82,20 +81,15 @@ class NotificationAgent:
         if self.slack_enabled:
             logger.info("Slack notifications enabled")
 
-        # Initialize AI analysis (Claude)
-        anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
-        if anthropic_api_key:
-            self.llm = ChatAnthropic(
-                model="claude-sonnet-4-5",
-                temperature=0,
-                max_tokens=2048,
-                anthropic_api_key=anthropic_api_key
-            )
+        # Initialize AI analysis using LLM abstraction layer
+        try:
+            self.llm = get_llm_from_config()
             self.ai_enabled = True
-            logger.info("AI analysis enabled (Claude Sonnet 4.5)")
-        else:
+            logger.info(f"AI analysis enabled ({self.llm.get_provider_name()} - {self.llm.get_model_name()})")
+        except Exception as e:
+            self.llm = None
             self.ai_enabled = False
-            logger.warning("ANTHROPIC_API_KEY not set. AI analysis disabled.")
+            logger.warning(f"AI analysis disabled: {str(e)}")
 
         logger.info(f"Notification Agent initialized (Email: {self.email_enabled}, Slack: {self.slack_enabled}, AI: {self.ai_enabled})")
 
@@ -1017,34 +1011,6 @@ Recommended Actions:
             }
             violation_details.append(detail)
 
-        # Create prompt
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a compliance analyst explaining SOD (Segregation of Duties) violations.
-
-Your task is to analyze why a user has compliance issues based on their role assignments.
-
-Provide a clear, concise summary (3-4 sentences) that:
-1. Identifies the problematic role combination
-2. Explains the specific risks this creates
-3. States why this violates SOD principles
-4. Suggests the primary remediation action
-
-Be direct and specific. Focus on business risk, not technical details."""),
-            ("human", """Analyze this compliance issue:
-
-User: {user_name}
-Department: {department}
-Title: {title}
-
-Assigned Roles:
-{roles}
-
-Violations Detected: {violation_count}
-{violation_summary}
-
-Provide a brief analysis explaining why these roles are problematic and what should be done.""")
-        ])
-
         # Format violation summary
         violation_summary_lines = []
         for i, v in enumerate(violations[:3], 1):  # Top 3 violations
@@ -1057,18 +1023,41 @@ Provide a brief analysis explaining why these roles are problematic and what sho
         if len(violations) > 3:
             violation_summary += f"\n... and {len(violations) - 3} more violations"
 
+        # Create messages using LLM abstraction layer
+        system_message = """You are a compliance analyst explaining SOD (Segregation of Duties) violations.
+
+Your task is to analyze why a user has compliance issues based on their role assignments.
+
+Provide a clear, concise summary (3-4 sentences) that:
+1. Identifies the problematic role combination
+2. Explains the specific risks this creates
+3. States why this violates SOD principles
+4. Suggests the primary remediation action
+
+Be direct and specific. Focus on business risk, not technical details."""
+
+        user_message = f"""Analyze this compliance issue:
+
+User: {user.name}
+Department: {user.department or "Unknown"}
+Title: {user.title or "Unknown"}
+
+Assigned Roles:
+{chr(10).join([f"- {role}" for role in role_names])}
+
+Violations Detected: {len(violations)}
+{violation_summary}
+
+Provide a brief analysis explaining why these roles are problematic and what should be done."""
+
+        messages = [
+            LLMMessage(role="system", content=system_message),
+            LLMMessage(role="user", content=user_message)
+        ]
+
         # Generate analysis
         try:
-            chain = prompt | self.llm
-            response = chain.invoke({
-                "user_name": user.name,
-                "department": user.department or "Unknown",
-                "title": user.title or "Unknown",
-                "roles": "\n".join([f"- {role}" for role in role_names]),
-                "violation_count": len(violations),
-                "violation_summary": violation_summary
-            })
-
+            response = self.llm.generate(messages)
             return response.content.strip()
 
         except Exception as e:

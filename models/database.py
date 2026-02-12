@@ -67,6 +67,62 @@ class NotificationStatus(enum.Enum):
     RETRYING = "RETRYING"
 
 
+class OktaUserStatus(enum.Enum):
+    """Okta user status"""
+    ACTIVE = "ACTIVE"
+    SUSPENDED = "SUSPENDED"
+    DEPROVISIONED = "DEPROVISIONED"
+    STAGED = "STAGED"
+    PASSWORD_EXPIRED = "PASSWORD_EXPIRED"
+    LOCKED_OUT = "LOCKED_OUT"
+
+
+class ReconciliationStatus(enum.Enum):
+    """User reconciliation status"""
+    MATCHED = "MATCHED"
+    ORPHANED = "ORPHANED"
+    MISSING_IN_OKTA = "MISSING_IN_OKTA"
+    MISSING_IN_NETSUITE = "MISSING_IN_NETSUITE"
+    STATUS_MISMATCH = "STATUS_MISMATCH"
+
+
+class RiskLevel(enum.Enum):
+    """Risk level for reconciliation discrepancies"""
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
+class ApprovalStatus(enum.Enum):
+    """Approval request status"""
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+
+
+class ExecutionStatus(enum.Enum):
+    """Execution status for deactivation"""
+    NOT_STARTED = "NOT_STARTED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    PARTIAL = "PARTIAL"
+
+
+class ExecutionMethod(enum.Enum):
+    """Method used for deactivation"""
+    RESTLET = "RESTLET"
+    MAPREDUCE = "MAPREDUCE"
+    MANUAL = "MANUAL"
+
+
+class DeactivationAction(enum.Enum):
+    """Deactivation action type"""
+    DEACTIVATE = "DEACTIVATE"
+    REACTIVATE = "REACTIVATE"
+
+
 # Models
 class User(Base):
     """NetSuite users"""
@@ -322,3 +378,199 @@ class AuditTrail(Base):
 
     def __repr__(self):
         return f"<AuditTrail(entity='{self.entity_type}', action='{self.action}', actor='{self.actor}')>"
+
+
+# Okta-NetSuite Reconciliation Models
+
+class OktaUser(Base):
+    """Okta user data for reconciliation"""
+    __tablename__ = 'okta_users'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    okta_id = Column(String(255), unique=True, nullable=False, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    first_name = Column(String(255))
+    last_name = Column(String(255))
+    status = Column(SQLEnum(OktaUserStatus), nullable=False, index=True)
+
+    # Okta metadata
+    login = Column(String(255))
+    activated = Column(DateTime)
+    status_changed = Column(DateTime)
+    last_login = Column(DateTime)
+    last_updated = Column(DateTime)
+    password_changed = Column(DateTime)
+
+    # Profile information
+    department = Column(String(255))
+    title = Column(String(255))
+    employee_number = Column(String(100))
+    manager = Column(String(255))
+    manager_id = Column(String(255))
+
+    # Okta groups (stored as JSON array)
+    okta_groups = Column(JSON)
+
+    # Sync metadata
+    synced_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    reconciliations = relationship("UserReconciliation", back_populates="okta_user", foreign_keys="UserReconciliation.okta_user_id")
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_okta_email', 'email'),
+        Index('idx_okta_status', 'status'),
+        Index('idx_okta_synced', 'synced_at'),
+    )
+
+    def __repr__(self):
+        return f"<OktaUser(okta_id='{self.okta_id}', email='{self.email}', status='{self.status}')>"
+
+
+class UserReconciliation(Base):
+    """User reconciliation between Okta and NetSuite"""
+    __tablename__ = 'user_reconciliations'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # User references
+    netsuite_user_id = Column(UUID(as_uuid=True), ForeignKey('users.id'))
+    okta_user_id = Column(UUID(as_uuid=True), ForeignKey('okta_users.id'))
+    email = Column(String(255), nullable=False, index=True)
+
+    # Status comparison
+    netsuite_status = Column(String(50))
+    okta_status = Column(String(50))
+    reconciliation_status = Column(SQLEnum(ReconciliationStatus), nullable=False, index=True)
+
+    # Details
+    discrepancy_reason = Column(Text)
+    risk_level = Column(SQLEnum(RiskLevel))
+
+    # Action tracking
+    requires_action = Column(Boolean, default=False, index=True)
+    action_required = Column(String(100))  # DEACTIVATE_NETSUITE, INVESTIGATE, etc.
+
+    # Metadata
+    reconciled_at = Column(DateTime, default=datetime.utcnow, index=True)
+    scan_id = Column(UUID(as_uuid=True))
+
+    # Relationships
+    netsuite_user = relationship("User", foreign_keys=[netsuite_user_id])
+    okta_user = relationship("OktaUser", back_populates="reconciliations", foreign_keys=[okta_user_id])
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_recon_status', 'reconciliation_status'),
+        Index('idx_recon_email', 'email'),
+        Index('idx_recon_requires_action', 'requires_action'),
+        Index('idx_recon_risk_level', 'risk_level'),
+    )
+
+    def __repr__(self):
+        return f"<UserReconciliation(email='{self.email}', status='{self.reconciliation_status}', risk='{self.risk_level}')>"
+
+
+class DeactivationApproval(Base):
+    """Deactivation approval requests"""
+    __tablename__ = 'deactivation_approvals'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # Request details
+    request_id = Column(String(100), unique=True, nullable=False, index=True)
+    user_ids = Column(JSON, nullable=False)  # Array of NetSuite user IDs to deactivate
+    user_count = Column(Integer, nullable=False)
+
+    # Approval workflow
+    status = Column(SQLEnum(ApprovalStatus), default=ApprovalStatus.PENDING, index=True)
+    requested_by = Column(String(255), nullable=False)
+    requested_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    approved_by = Column(String(255))
+    approved_at = Column(DateTime)
+
+    rejected_by = Column(String(255))
+    rejected_at = Column(DateTime)
+    rejection_reason = Column(Text)
+
+    # Execution tracking
+    execution_status = Column(SQLEnum(ExecutionStatus))
+    execution_method = Column(SQLEnum(ExecutionMethod))
+    execution_started_at = Column(DateTime)
+    execution_completed_at = Column(DateTime)
+
+    # Results
+    users_deactivated = Column(Integer, default=0)
+    users_failed = Column(Integer, default=0)
+    execution_errors = Column(JSON)
+
+    # Metadata
+    expires_at = Column(DateTime)  # Auto-reject after 48 hours
+    approval_metadata = Column(JSON)
+
+    # Relationships
+    deactivation_logs = relationship("DeactivationLog", back_populates="approval_request")
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_approval_status', 'status'),
+        Index('idx_approval_requested_at', 'requested_at'),
+        Index('idx_approval_execution_status', 'execution_status'),
+    )
+
+    def __repr__(self):
+        return f"<DeactivationApproval(request_id='{self.request_id}', status='{self.status}', users={self.user_count})>"
+
+
+class DeactivationLog(Base):
+    """Deactivation action logs"""
+    __tablename__ = 'deactivation_logs'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # User reference
+    netsuite_user_id = Column(UUID(as_uuid=True), ForeignKey('users.id'))
+    netsuite_internal_id = Column(String(100), index=True)
+    email = Column(String(255), nullable=False, index=True)
+
+    # Approval reference
+    approval_request_id = Column(UUID(as_uuid=True), ForeignKey('deactivation_approvals.id'))
+
+    # Action details
+    action = Column(SQLEnum(DeactivationAction), nullable=False)
+    method = Column(SQLEnum(ExecutionMethod))
+
+    # Status
+    status = Column(String(50), nullable=False, index=True)  # SUCCESS, FAILED, PENDING
+    error_message = Column(Text)
+
+    # Metadata
+    performed_by = Column(String(255))
+    performed_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    # Audit trail
+    reason = Column(Text)
+    okta_status_at_time = Column(String(50))
+    netsuite_status_before = Column(String(50))
+    netsuite_status_after = Column(String(50))
+
+    log_metadata = Column(JSON)
+
+    # Relationships
+    netsuite_user = relationship("User", foreign_keys=[netsuite_user_id])
+    approval_request = relationship("DeactivationApproval", back_populates="deactivation_logs")
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_deactivation_email', 'email'),
+        Index('idx_deactivation_status', 'status'),
+        Index('idx_deactivation_performed_at', 'performed_at'),
+        Index('idx_deactivation_approval', 'approval_request_id'),
+    )
+
+    def __repr__(self):
+        return f"<DeactivationLog(email='{self.email}', action='{self.action}', status='{self.status}')>"

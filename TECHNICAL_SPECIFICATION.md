@@ -122,7 +122,7 @@
 ## 1. Executive Summary
 
 ### 1.1 Purpose
-The SOD Compliance System is an AI-powered, multi-agent platform that automatically detects, assesses, and reports Segregation of Duties (SOD) violations in NetSuite environments using LangChain/LangGraph orchestration and Claude Opus 4-6 for intelligent risk assessment.
+The SOD Compliance System is an AI-powered, multi-agent platform that automatically detects, assesses, and reports Segregation of Duties (SOD) violations in ERP (e.g., Netsuite) environments using LangChain/LangGraph orchestration and Claude Opus 4-6 for intelligent risk assessment.
 
 ### 1.2 Objectives
 - **Automated Detection**: Identify SOD violations across 18 compliance rules (SOX + Internal)
