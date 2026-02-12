@@ -97,11 +97,11 @@ class KnowledgeBaseAgentPgvector:
             count = 0
             for rule_data in rules:
                 # Check if rule already exists
-                existing_rule = self.sod_rule_repo.get_rule_by_rule_id(
+                existing_rule = self.sod_rule_repo.get_rule_by_id(
                     rule_data['rule_id']
                 )
 
-                if existing_rule and existing_rule.embedding:
+                if existing_rule and existing_rule.embedding is not None:
                     logger.debug(f"Rule {rule_data['rule_id']} already has embedding")
                     continue
 
@@ -342,7 +342,7 @@ class KnowledgeBaseAgentPgvector:
                 'error': 'AI explanations not available'
             }
 
-        rule = self.sod_rule_repo.get_rule_by_rule_id(rule_id)
+        rule = self.sod_rule_repo.get_rule_by_id(rule_id)
         if not rule:
             return {
                 'success': False,

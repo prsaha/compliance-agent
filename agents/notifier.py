@@ -17,6 +17,7 @@ from enum import Enum
 import json
 
 from services.llm import get_llm_from_config, LLMMessage
+from services.cache_service import get_cache_service
 
 from models.database import (
     Notification, NotificationChannel, NotificationStatus,
@@ -44,7 +45,8 @@ class NotificationAgent:
         violation_repo: ViolationRepository,
         user_repo: UserRepository,
         sendgrid_api_key: Optional[str] = None,
-        slack_webhook_url: Optional[str] = None
+        slack_webhook_url: Optional[str] = None,
+        enable_cache: bool = True
     ):
         """
         Initialize Notification Agent
@@ -54,9 +56,18 @@ class NotificationAgent:
             user_repo: User repository instance
             sendgrid_api_key: SendGrid API key for email
             slack_webhook_url: Slack webhook URL for notifications
+            enable_cache: Whether to enable Redis caching for AI analysis
         """
         self.violation_repo = violation_repo
         self.user_repo = user_repo
+
+        # Initialize cache service
+        redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+        self.cache = get_cache_service(redis_url=redis_url, enabled=enable_cache)
+        if self.cache.enabled:
+            logger.info("Cache service enabled for AI analysis")
+        else:
+            logger.warning("Cache service disabled - all LLM calls will be fresh")
 
         # Initialize email client (SendGrid)
         self.sendgrid_api_key = sendgrid_api_key or os.getenv('SENDGRID_API_KEY')
@@ -988,16 +999,30 @@ Recommended Actions:
         """
         Generate AI-powered analysis of why user has compliance issues
 
+        Uses Redis cache to avoid redundant LLM calls for identical scenarios.
+
         Args:
             user: User object
             violations: List of violations for this user
             role_names: List of role names assigned to user
 
         Returns:
-            AI-generated analysis text
+            AI-generated analysis text (cached if available)
         """
         if not self.ai_enabled or not violations:
             return ""
+
+        # Check cache first
+        violation_ids = [str(v.id) for v in violations]
+        cached_analysis = self.cache.get_ai_analysis(
+            user_id=str(user.id),
+            violation_ids=violation_ids,
+            role_names=role_names
+        )
+
+        if cached_analysis:
+            logger.info(f"Using cached AI analysis for user {user.name}")
+            return cached_analysis
 
         # Prepare violation details
         violation_details = []
@@ -1058,7 +1083,20 @@ Provide a brief analysis explaining why these roles are problematic and what sho
         # Generate analysis
         try:
             response = self.llm.generate(messages)
-            return response.content.strip()
+            analysis = response.content.strip()
+
+            # Cache the result for future use (24 hour TTL)
+            if analysis:
+                self.cache.set_ai_analysis(
+                    user_id=str(user.id),
+                    violation_ids=violation_ids,
+                    role_names=role_names,
+                    analysis=analysis,
+                    ttl=86400  # 24 hours
+                )
+                logger.info(f"Cached AI analysis for user {user.name}")
+
+            return analysis
 
         except Exception as e:
             logger.error(f"Failed to generate AI analysis: {str(e)}")

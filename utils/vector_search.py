@@ -130,12 +130,14 @@ class VectorSearcher:
             columns_str = "*"
 
         # Build distance/similarity expression
+        # Use CAST instead of :: to avoid SQLAlchemy parameter parsing issues
+        query_vec_cast = "CAST(:query_vector AS vector)"
         if self.config.metric == DistanceMetric.COSINE:
-            score_expr = f"1 - ({embedding_column} {operator} :query_vector) AS similarity"
-            order_by = f"{embedding_column} {operator} :query_vector"
+            score_expr = f"1 - ({embedding_column} {operator} {query_vec_cast}) AS similarity"
+            order_by = f"{embedding_column} {operator} {query_vec_cast}"
         else:
-            score_expr = f"{embedding_column} {operator} :query_vector AS distance"
-            order_by = f"{embedding_column} {operator} :query_vector"
+            score_expr = f"{embedding_column} {operator} {query_vec_cast} AS distance"
+            order_by = f"{embedding_column} {operator} {query_vec_cast}"
 
         # Build filter clause
         filter_clause = ""
@@ -144,15 +146,17 @@ class VectorSearcher:
             filter_clause = "WHERE " + " AND ".join(conditions)
 
             # Add similarity/distance threshold
+            query_vec_cast = "CAST(:query_vector AS vector)"
             if self.config.metric == DistanceMetric.COSINE and self.config.min_similarity:
-                filter_clause += f" AND (1 - ({embedding_column} {operator} :query_vector)) >= :min_similarity"
+                filter_clause += f" AND (1 - ({embedding_column} {operator} {query_vec_cast})) >= :min_similarity"
             elif self.config.max_distance:
-                filter_clause += f" AND ({embedding_column} {operator} :query_vector) <= :max_distance"
+                filter_clause += f" AND ({embedding_column} {operator} {query_vec_cast}) <= :max_distance"
         else:
+            query_vec_cast = "CAST(:query_vector AS vector)"
             if self.config.metric == DistanceMetric.COSINE and self.config.min_similarity:
-                filter_clause = f"WHERE (1 - ({embedding_column} {operator} :query_vector)) >= :min_similarity"
+                filter_clause = f"WHERE (1 - ({embedding_column} {operator} {query_vec_cast})) >= :min_similarity"
             elif self.config.max_distance:
-                filter_clause = f"WHERE ({embedding_column} {operator} :query_vector) <= :max_distance"
+                filter_clause = f"WHERE ({embedding_column} {operator} {query_vec_cast}) <= :max_distance"
 
         # Build query
         query_sql = f"""
