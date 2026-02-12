@@ -5,20 +5,18 @@ Each tool represents a capability that Claude can invoke via MCP protocol.
 """
 from typing import List, Dict, Any, Optional
 import logging
+import asyncio
+from functools import lru_cache
 from .orchestrator import ComplianceOrchestrator
 
 logger = logging.getLogger(__name__)
 
-# Initialize orchestrator (singleton)
-_orchestrator = None
 
-
+@lru_cache(maxsize=1)
 def get_orchestrator() -> ComplianceOrchestrator:
-    """Get or create orchestrator instance"""
-    global _orchestrator
-    if _orchestrator is None:
-        _orchestrator = ComplianceOrchestrator()
-    return _orchestrator
+    """Get or create orchestrator instance (cached)"""
+    logger.info("Creating new orchestrator instance...")
+    return ComplianceOrchestrator()
 
 
 # ============================================================================
@@ -178,8 +176,15 @@ async def list_systems_handler() -> str:
         Formatted string with system information
     """
     try:
-        orchestrator = get_orchestrator()
-        systems = await orchestrator.list_available_systems()
+        logger.info("list_systems_handler called")
+        # Create orchestrator directly to debug
+        from .orchestrator import ComplianceOrchestrator
+        logger.info("Creating orchestrator directly...")
+        orchestrator = ComplianceOrchestrator()
+        logger.info("Orchestrator created, calling list_available_systems_sync")
+        # Run synchronous method in thread pool
+        systems = await asyncio.to_thread(orchestrator.list_available_systems_sync)
+        logger.info(f"list_available_systems_sync returned {len(systems)} systems")
 
         if not systems:
             return "No systems configured. Please configure system connectors."
@@ -196,7 +201,12 @@ async def list_systems_handler() -> str:
         return result
 
     except Exception as e:
-        logger.error(f"Error in list_systems_handler: {str(e)}", exc_info=True)
+        import traceback
+        full_traceback = traceback.format_exc()
+        print(f"=== ERROR IN list_systems_handler ===", flush=True)
+        print(full_traceback, flush=True)
+        print(f"=== END ERROR ===", flush=True)
+        logger.error(f"Error in list_systems_handler: {str(e)}\n{full_traceback}")
         return f"Error listing systems: {str(e)}"
 
 
@@ -215,7 +225,9 @@ async def perform_access_review_handler(
         logger.info(f"Performing access review: {system_name}")
 
         orchestrator = get_orchestrator()
-        result = await orchestrator.perform_access_review(
+        # Run synchronous method in thread pool
+        result = await asyncio.to_thread(
+            orchestrator.perform_access_review_sync,
             system_name=system_name,
             analysis_type=analysis_type,
             include_recommendations=include_recommendations
@@ -266,7 +278,9 @@ async def get_user_violations_handler(
         logger.info(f"Fetching violations for user: {user_identifier}")
 
         orchestrator = get_orchestrator()
-        result = await orchestrator.get_user_violations(
+        # Run synchronous method in thread pool
+        result = await asyncio.to_thread(
+            orchestrator.get_user_violations_sync,
             system_name=system_name,
             user_identifier=user_identifier,
             include_ai_analysis=include_ai_analysis
@@ -320,7 +334,9 @@ async def remediate_violation_handler(
         logger.info(f"Creating remediation: {violation_id}, {action}")
 
         orchestrator = get_orchestrator()
-        result = await orchestrator.remediate_violation(
+        # Run synchronous method in thread pool
+        result = await asyncio.to_thread(
+            orchestrator.remediate_violation_sync,
             violation_id=violation_id,
             action=action,
             notes=notes
@@ -368,7 +384,9 @@ async def schedule_review_handler(
         logger.info(f"Scheduling review: {system_name}, {frequency}")
 
         orchestrator = get_orchestrator()
-        result = await orchestrator.schedule_review(
+        # Run synchronous method in thread pool
+        result = await asyncio.to_thread(
+            orchestrator.schedule_review_sync,
             system_name=system_name,
             frequency=frequency,
             day_of_week=day_of_week,
@@ -411,7 +429,9 @@ async def get_violation_stats_handler(
         logger.info(f"Fetching violation stats: {time_range}")
 
         orchestrator = get_orchestrator()
-        result = await orchestrator.get_violation_stats(
+        # Run synchronous method in thread pool
+        result = await asyncio.to_thread(
+            orchestrator.get_violation_stats_sync,
             systems=systems if systems else None,
             time_range=time_range
         )

@@ -27,7 +27,7 @@ class BaseConnector(ABC):
         logger.info(f"Initialized {system_name} connector")
 
     @abstractmethod
-    async def test_connection(self) -> bool:
+    def test_connection_sync(self) -> bool:
         """
         Test connection to external system
 
@@ -37,7 +37,7 @@ class BaseConnector(ABC):
         pass
 
     @abstractmethod
-    async def get_user_count(self) -> int:
+    def get_user_count_sync(self) -> int:
         """
         Get total number of users in the system
 
@@ -47,7 +47,7 @@ class BaseConnector(ABC):
         pass
 
     @abstractmethod
-    async def fetch_users_with_roles(self, **kwargs) -> List[Dict[str, Any]]:
+    def fetch_users_with_roles_sync(self, **kwargs) -> List[Dict[str, Any]]:
         """
         Fetch all users with their roles from external system
 
@@ -60,7 +60,7 @@ class BaseConnector(ABC):
         pass
 
     @abstractmethod
-    async def sync_to_database(
+    def sync_to_database_sync(
         self,
         users_data: List[Dict[str, Any]],
         user_repo

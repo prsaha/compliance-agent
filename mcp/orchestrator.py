@@ -82,7 +82,7 @@ class ComplianceOrchestrator:
 
         logger.info("ComplianceOrchestrator initialized successfully")
 
-    async def list_available_systems(self) -> List[Dict[str, Any]]:
+    def list_available_systems_sync(self) -> List[Dict[str, Any]]:
         """
         List all configured systems with their status
 
@@ -95,13 +95,13 @@ class ComplianceOrchestrator:
         for name, connector in self.connectors.items():
             try:
                 # Test connection
-                status = await connector.test_connection()
+                status = connector.test_connection_sync()
 
                 # Get user count
-                user_count = await connector.get_user_count() if status else 0
+                user_count = connector.get_user_count_sync() if status else 0
 
                 # Get last review date
-                last_review = await connector.get_last_sync_date(self.violation_repo)
+                last_review = connector.get_last_sync_date_sync(self.violation_repo)
 
                 systems.append({
                     "name": name,
@@ -126,7 +126,7 @@ class ComplianceOrchestrator:
 
         return systems
 
-    async def perform_access_review(
+    def perform_access_review_sync(
         self,
         system_name: str,
         analysis_type: str = "sod_violations",
@@ -160,12 +160,12 @@ class ComplianceOrchestrator:
 
         # Step 2: Test connection
         logger.info(f"Testing connection to {system_name}...")
-        if not await connector.test_connection():
+        if not connector.test_connection_sync():
             raise ConnectionError(f"Cannot connect to {system_name}")
 
         # Step 3: Fetch data from external system
         logger.info(f"Fetching users from {system_name}...")
-        users_data = await connector.fetch_users_with_roles(
+        users_data = connector.fetch_users_with_roles_sync(
             include_permissions=True
         )
 
@@ -180,7 +180,7 @@ class ComplianceOrchestrator:
 
         # Step 4: Sync to database
         logger.info(f"Syncing {len(users_data)} users to database...")
-        synced_users = await connector.sync_to_database(users_data, self.user_repo)
+        synced_users = connector.sync_to_database_sync(users_data, self.user_repo)
 
         # Step 5: Run SOD analysis
         logger.info(f"Running SOD analysis for {len(synced_users)} users...")
@@ -234,7 +234,7 @@ class ComplianceOrchestrator:
         recommendations = ""
         if include_recommendations and violations:
             logger.info("Generating AI recommendations...")
-            recommendations = await self._generate_recommendations(
+            recommendations = self._generate_recommendations_sync(
                 system_name, violations, top_violators
             )
 
@@ -258,7 +258,7 @@ class ComplianceOrchestrator:
             "analysis_type": analysis_type
         }
 
-    async def get_user_violations(
+    def get_user_violations_sync(
         self,
         system_name: str,
         user_identifier: str,
@@ -330,7 +330,7 @@ class ComplianceOrchestrator:
             "is_active": user.is_active
         }
 
-    async def remediate_violation(
+    def remediate_violation_sync(
         self,
         violation_id: str,
         action: str,
@@ -402,7 +402,7 @@ class ComplianceOrchestrator:
             "created_at": datetime.utcnow().isoformat()
         }
 
-    async def schedule_review(
+    def schedule_review_sync(
         self,
         system_name: str,
         frequency: str,
@@ -442,7 +442,7 @@ class ComplianceOrchestrator:
             "created_at": datetime.utcnow().isoformat()
         }
 
-    async def get_violation_stats(
+    def get_violation_stats_sync(
         self,
         systems: Optional[List[str]] = None,
         time_range: str = "month"
@@ -459,14 +459,14 @@ class ComplianceOrchestrator:
         """
         logger.info(f"Fetching violation stats for {time_range}")
 
-        # Get all violations
-        all_violations = self.violation_repo.get_all_violations()
+        # Get all open violations
+        all_violations = self.violation_repo.get_open_violations()
 
         # Filter by system if specified
         if systems:
             all_violations = [
                 v for v in all_violations
-                if v.user and v.user.source_system in systems
+                if v.user and hasattr(v.user, 'source_system') and v.user.source_system in systems
             ]
 
         # Calculate statistics
@@ -483,7 +483,7 @@ class ComplianceOrchestrator:
         by_system = {}
         for violation in all_violations:
             if violation.user:
-                system = violation.user.source_system
+                system = getattr(violation.user, 'source_system', 'unknown')
                 if system not in by_system:
                     by_system[system] = 0
                 by_system[system] += 1
@@ -510,7 +510,7 @@ class ComplianceOrchestrator:
 
     # Helper methods
 
-    async def _generate_recommendations(
+    def _generate_recommendations_sync(
         self,
         system_name: str,
         violations: List,

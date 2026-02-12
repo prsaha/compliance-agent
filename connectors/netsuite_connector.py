@@ -24,7 +24,7 @@ class NetSuiteConnector(BaseConnector):
         self.client = NetSuiteClient()
         logger.info("NetSuite connector initialized with existing client")
 
-    async def test_connection(self) -> bool:
+    def test_connection_sync(self) -> bool:
         """
         Test NetSuite connection
 
@@ -37,7 +37,7 @@ class NetSuiteConnector(BaseConnector):
             logger.error(f"NetSuite connection test failed: {str(e)}")
             return False
 
-    async def get_user_count(self) -> int:
+    def get_user_count_sync(self) -> int:
         """
         Get total number of active users in NetSuite
 
@@ -58,7 +58,7 @@ class NetSuiteConnector(BaseConnector):
             logger.error(f"Failed to get NetSuite user count: {str(e)}")
             return 0
 
-    async def fetch_users_with_roles(
+    def fetch_users_with_roles_sync(
         self,
         include_permissions: bool = True,
         include_inactive: bool = False,
@@ -98,7 +98,7 @@ class NetSuiteConnector(BaseConnector):
             logger.error(f"Error fetching users from NetSuite: {str(e)}")
             raise
 
-    async def search_user(
+    def search_user_sync(
         self,
         search_value: str,
         search_type: str = 'both',
@@ -133,7 +133,7 @@ class NetSuiteConnector(BaseConnector):
             logger.error(f"Error searching NetSuite user: {str(e)}")
             return None
 
-    async def sync_to_database(
+    def sync_to_database_sync(
         self,
         users_data: List[Dict[str, Any]],
         user_repo
@@ -199,7 +199,7 @@ class NetSuiteConnector(BaseConnector):
         """Get system type"""
         return "ERP"
 
-    async def get_last_sync_date(self, violation_repo) -> Optional[datetime]:
+    def get_last_sync_date_sync(self, violation_repo) -> Optional[datetime]:
         """
         Get the date of the last sync/review
 
