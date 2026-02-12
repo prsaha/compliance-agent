@@ -1,0 +1,127 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: compliance-postgres
+    environment:
+      POSTGRES_DB: compliance_db
+      POSTGRES_USER: compliance_user
+      POSTGRES_PASSWORD: compliance_pass
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U compliance_user -d compliance_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: compliance-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # FastAPI application (uncomment when ready)
+  # app:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: compliance-api
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   environment:
+  #     DATABASE_URL: postgresql://compliance_user:compliance_pass@postgres:5432/compliance_db
+  #     REDIS_URL: redis://redis:6379/0
+  #   env_file:
+  #     - .env
+  #   ports:
+  #     - "8000:8000"
+  #   volumes:
+  #     - .:/app
+  #   command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Celery worker (uncomment when ready)
+  # celery-worker:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: compliance-celery
+  #   depends_on:
+  #     - postgres
+  #     - redis
+  #   environment:
+  #     DATABASE_URL: postgresql://compliance_user:compliance_pass@postgres:5432/compliance_db
+  #     REDIS_URL: redis://redis:6379/0
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - .:/app
+  #   command: celery -A workflows.tasks worker --loglevel=info
+
+  # Celery beat scheduler (uncomment when ready)
+  # celery-beat:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: compliance-celery-beat
+  #   depends_on:
+  #     - postgres
+  #     - redis
+  #   environment:
+  #     DATABASE_URL: postgresql://compliance_user:compliance_pass@postgres:5432/compliance_db
+  #     REDIS_URL: redis://redis:6379/0
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - .:/app
+  #   command: celery -A workflows.tasks beat --loglevel=info
+
+  # Prometheus (optional monitoring)
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: compliance-prometheus
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+  #     - prometheus_data:/prometheus
+  #   command:
+  #     - '--config.file=/etc/prometheus/prometheus.yml'
+
+  # Grafana (optional monitoring)
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   container_name: compliance-grafana
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - GF_SECURITY_ADMIN_PASSWORD=admin
+  #   volumes:
+  #     - grafana_data:/var/lib/grafana
+  #     - ./monitoring/grafana_dashboards:/etc/grafana/provisioning/dashboards
+
+volumes:
+  postgres_data:
+  redis_data:
+  # prometheus_data:
+  # grafana_data:
+
+networks:
+  default:
+    name: compliance-network

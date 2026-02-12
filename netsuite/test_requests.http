@@ -1,0 +1,286 @@
+### NetSuite SOD RESTlet - Test Requests
+### Use with REST Client extension in VS Code or similar HTTP client
+
+### Variables (update these with your values)
+@account = 1234567
+@script = 123
+@deploy = 1
+@baseUrl = https://{{account}}.restlets.api.netsuite.com/app/site/hosting/restlet.nl
+
+### =============================================================================
+### GET Requests
+### =============================================================================
+
+### 1. Basic GET - Fetch all active users (default settings)
+GET {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+Authorization: OAuth realm="{{account}}",oauth_consumer_key="YOUR_CONSUMER_KEY",oauth_token="YOUR_TOKEN_ID",oauth_signature_method="HMAC-SHA256",oauth_timestamp="1234567890",oauth_nonce="random_nonce",oauth_version="1.0",oauth_signature="YOUR_SIGNATURE"
+
+### 2. GET with Query Parameters - Fetch with filters
+GET {{baseUrl}}?script={{script}}&deploy={{deploy}}&status=ACTIVE&limit=50&offset=0
+Content-Type: application/json
+Authorization: OAuth ...
+
+### 3. GET Inactive Users
+GET {{baseUrl}}?script={{script}}&deploy={{deploy}}&status=INACTIVE
+Content-Type: application/json
+Authorization: OAuth ...
+
+### =============================================================================
+### POST Requests (Recommended - More Control)
+### =============================================================================
+
+### 1. Basic POST - Fetch first 10 users with permissions
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+Authorization: OAuth ...
+
+{
+  "limit": 10,
+  "offset": 0,
+  "includePermissions": true
+}
+
+### 2. POST with Subsidiary Filter
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+Authorization: OAuth ...
+
+{
+  "status": "ACTIVE",
+  "subsidiary": "United States",
+  "limit": 100,
+  "offset": 0,
+  "includePermissions": true
+}
+
+### 3. POST with Department Filter
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+Authorization: OAuth ...
+
+{
+  "status": "ACTIVE",
+  "department": "Finance",
+  "limit": 50,
+  "includePermissions": true
+}
+
+### 4. POST with Multiple Filters
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+Authorization: OAuth ...
+
+{
+  "status": "ACTIVE",
+  "subsidiary": "United States",
+  "department": "Finance",
+  "limit": 100,
+  "offset": 0,
+  "includePermissions": true
+}
+
+### 5. POST WITHOUT Permissions (Faster Query)
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+Authorization: OAuth ...
+
+{
+  "status": "ACTIVE",
+  "limit": 500,
+  "includePermissions": false
+}
+
+### 6. POST with Pagination - Page 1
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+Authorization: OAuth ...
+
+{
+  "limit": 100,
+  "offset": 0,
+  "includePermissions": true
+}
+
+### 7. POST with Pagination - Page 2
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+Authorization: OAuth ...
+
+{
+  "limit": 100,
+  "offset": 100,
+  "includePermissions": true
+}
+
+### 8. POST Including Inactive Users
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+Authorization: OAuth ...
+
+{
+  "includeInactive": true,
+  "limit": 200,
+  "includePermissions": false
+}
+
+### =============================================================================
+### Expected Response Format
+### =============================================================================
+
+### Success Response Example:
+# {
+#   "success": true,
+#   "data": {
+#     "users": [
+#       {
+#         "user_id": "jdoe",
+#         "internal_id": "12345",
+#         "name": "John Doe",
+#         "email": "jdoe@company.com",
+#         "employee_id": "EMP-001",
+#         "status": "ACTIVE",
+#         "subsidiary": "United States",
+#         "department": "Finance",
+#         "last_login": "2026-02-09T10:30:00Z",
+#         "roles": [
+#           {
+#             "role_id": "3",
+#             "role_name": "Administrator",
+#             "is_custom": false,
+#             "permissions": [
+#               {"permission": "TRAN_BILL", "level": "FULL"},
+#               {"permission": "TRAN_APPROVE", "level": "FULL"}
+#             ],
+#             "permission_count": 150
+#           },
+#           {
+#             "role_id": "customrole_ap_clerk",
+#             "role_name": "AP Clerk",
+#             "is_custom": true,
+#             "permissions": [
+#               {"permission": "TRAN_BILL", "level": "CREATE"},
+#               {"permission": "TRAN_VENDBILL", "level": "EDIT"}
+#             ],
+#             "permission_count": 25
+#           }
+#         ],
+#         "roles_count": 2,
+#         "synced_at": "2026-02-09T15:45:23Z"
+#       }
+#     ],
+#     "metadata": {
+#       "total_users": 250,
+#       "returned_count": 10,
+#       "limit": 10,
+#       "offset": 0,
+#       "has_more": true,
+#       "filters_applied": {
+#         "status": "ACTIVE",
+#         "limit": 10,
+#         "offset": 0,
+#         "includePermissions": true
+#       },
+#       "execution_time_seconds": 3.45,
+#       "timestamp": "2026-02-09T15:45:23Z"
+#     }
+#   }
+# }
+
+### Error Response Example:
+# {
+#   "success": false,
+#   "error": "Error message here",
+#   "message": "Error fetching users and roles"
+# }
+
+### =============================================================================
+### Testing Scenarios
+### =============================================================================
+
+### Scenario 1: Initial Full Sync (All Active Users)
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+
+{
+  "status": "ACTIVE",
+  "limit": 1000,
+  "offset": 0,
+  "includePermissions": true
+}
+
+### Scenario 2: Quick Check (Roles Only, No Permissions)
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+
+{
+  "status": "ACTIVE",
+  "limit": 1000,
+  "includePermissions": false
+}
+
+### Scenario 3: Department-Specific Audit (Finance Only)
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+
+{
+  "status": "ACTIVE",
+  "department": "Finance",
+  "includePermissions": true
+}
+
+### Scenario 4: Subsidiary-Specific Audit (US Only)
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+
+{
+  "status": "ACTIVE",
+  "subsidiary": "United States",
+  "includePermissions": true
+}
+
+### Scenario 5: Performance Test (Large Dataset)
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+
+{
+  "status": "ACTIVE",
+  "limit": 500,
+  "includePermissions": false
+}
+
+### =============================================================================
+### Pagination Example
+### =============================================================================
+
+### Fetch all users with pagination (100 per page)
+
+### Page 1
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+
+{
+  "limit": 100,
+  "offset": 0,
+  "includePermissions": true
+}
+
+### Page 2 (if has_more = true)
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+
+{
+  "limit": 100,
+  "offset": 100,
+  "includePermissions": true
+}
+
+### Page 3 (if has_more = true)
+POST {{baseUrl}}?script={{script}}&deploy={{deploy}}
+Content-Type: application/json
+
+{
+  "limit": 100,
+  "offset": 200,
+  "includePermissions": true
+}

@@ -1,0 +1,281 @@
+[
+  {
+    "rule_id": "SOD-FIN-001",
+    "rule_name": "AP Entry vs. Approval Separation",
+    "description": "Users should not be able to both create and approve vendor bills to prevent fraud and ensure proper financial controls",
+    "rule_type": "FINANCIAL",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Create Bill", "Approve Bill"],
+        ["Enter Vendor Payment", "Approve Vendor Payment"]
+      ]
+    },
+    "severity": "CRITICAL",
+    "regulatory_framework": "SOX",
+    "remediation_guidance": "Remove either the Bill Creation permission or the Bill Approval permission. Implement dual control with separate users for entry and approval."
+  },
+  {
+    "rule_id": "SOD-FIN-002",
+    "rule_name": "Journal Entry Creation vs. Approval",
+    "description": "Users should not be able to both create and approve journal entries to prevent unauthorized financial adjustments",
+    "rule_type": "FINANCIAL",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Create Journal Entry", "Approve Journal Entry"],
+        ["Edit Journal Entry", "Approve Journal Entry"]
+      ]
+    },
+    "severity": "CRITICAL",
+    "regulatory_framework": "SOX",
+    "remediation_guidance": "Separate journal entry creation and approval roles. Ensure maker-checker control for all journal entries."
+  },
+  {
+    "rule_id": "SOD-FIN-003",
+    "rule_name": "Bank Reconciliation vs. Cash Transactions",
+    "description": "Users performing bank reconciliations should not be able to create or modify cash transactions",
+    "rule_type": "FINANCIAL",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Bank Reconciliation", "Create Check"],
+        ["Bank Reconciliation", "Create Deposit"],
+        ["Bank Reconciliation", "Enter Vendor Payment"]
+      ]
+    },
+    "severity": "HIGH",
+    "regulatory_framework": "SOX",
+    "remediation_guidance": "Assign bank reconciliation responsibilities to users who do not have access to create cash transactions."
+  },
+  {
+    "rule_id": "SOD-FIN-004",
+    "rule_name": "Customer Credit Management vs. Collections",
+    "description": "Users managing customer credit limits should not handle collections to prevent abuse",
+    "rule_type": "FINANCIAL",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Edit Customer Credit Limit", "Apply Customer Payment"],
+        ["Edit Customer Credit Limit", "Create Credit Memo"]
+      ]
+    },
+    "severity": "MEDIUM",
+    "regulatory_framework": "INTERNAL",
+    "remediation_guidance": "Separate credit management from collections functions. Credit limit changes should be approved by management."
+  },
+  {
+    "rule_id": "SOD-PROC-001",
+    "rule_name": "Purchase Order Creation vs. Approval",
+    "description": "Users should not be able to both create and approve purchase orders to ensure proper procurement controls",
+    "rule_type": "PROCUREMENT",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Create Purchase Order", "Approve Purchase Order"],
+        ["Edit Purchase Order", "Approve Purchase Order"]
+      ]
+    },
+    "severity": "HIGH",
+    "regulatory_framework": "INTERNAL",
+    "remediation_guidance": "Implement segregation between PO creation and approval. Use approval workflows based on dollar thresholds."
+  },
+  {
+    "rule_id": "SOD-PROC-002",
+    "rule_name": "Vendor Master Data vs. AP Processing",
+    "description": "Users who can create or modify vendor records should not process vendor payments",
+    "rule_type": "PROCUREMENT",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Create Vendor", "Enter Vendor Payment"],
+        ["Edit Vendor Banking Details", "Enter Vendor Payment"],
+        ["Edit Vendor", "Approve Bill"]
+      ]
+    },
+    "severity": "CRITICAL",
+    "regulatory_framework": "SOX",
+    "remediation_guidance": "Separate vendor master data maintenance from AP processing. Require dual approval for vendor banking detail changes."
+  },
+  {
+    "rule_id": "SOD-IT-001",
+    "rule_name": "Administrator vs. Regular User Roles",
+    "description": "Users should not have both administrator privileges and regular business user access",
+    "rule_type": "IT_ACCESS",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Administrator", "AP Clerk"],
+        ["Administrator", "AR Clerk"],
+        ["Administrator", "Sales Representative"]
+      ]
+    },
+    "severity": "HIGH",
+    "regulatory_framework": "INTERNAL",
+    "remediation_guidance": "Use separate accounts for administrative tasks and business operations. Implement privileged access management (PAM)."
+  },
+  {
+    "rule_id": "SOD-IT-002",
+    "rule_name": "Script Development vs. Production Execution",
+    "description": "Users who develop or modify SuiteScripts should not have permissions to deploy to production",
+    "rule_type": "IT_ACCESS",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["SuiteScript Developer", "SuiteScript Deploy"],
+        ["Customize SuiteScript", "Production Script Execution"]
+      ]
+    },
+    "severity": "HIGH",
+    "regulatory_framework": "INTERNAL",
+    "remediation_guidance": "Implement change management process with code review and separate deployment approvals."
+  },
+  {
+    "rule_id": "SOD-IT-003",
+    "rule_name": "User Administration vs. Business Operations",
+    "description": "Users who can create or modify user accounts should not perform business transactions",
+    "rule_type": "IT_ACCESS",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["User Administration", "Financial Transactions"],
+        ["Create User", "Process Payments"],
+        ["Edit User Roles", "Approve Financial Documents"]
+      ]
+    },
+    "severity": "MEDIUM",
+    "regulatory_framework": "INTERNAL",
+    "remediation_guidance": "Separate IT administration from business operations. Use role-based access control (RBAC)."
+  },
+  {
+    "rule_id": "SOD-FIN-005",
+    "rule_name": "Revenue Recognition vs. Sales Order Entry",
+    "description": "Users who can recognize revenue should not create or modify sales orders",
+    "rule_type": "FINANCIAL",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Revenue Recognition Override", "Create Sales Order"],
+        ["Revenue Recognition Override", "Edit Sales Order"],
+        ["Recognize Revenue", "Create Invoice"]
+      ]
+    },
+    "severity": "HIGH",
+    "regulatory_framework": "SOX",
+    "remediation_guidance": "Separate revenue recognition functions from sales order processing. Implement automated revenue recognition where possible."
+  },
+  {
+    "rule_id": "SOD-FIN-006",
+    "rule_name": "Inventory Adjustments vs. Warehouse Operations",
+    "description": "Users who can make inventory adjustments should not perform warehouse transactions",
+    "rule_type": "FINANCIAL",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Inventory Adjustment", "Fulfill Sales Order"],
+        ["Inventory Adjustment", "Receive Purchase Order"],
+        ["Write-Off Inventory", "Warehouse Manager"]
+      ]
+    },
+    "severity": "MEDIUM",
+    "regulatory_framework": "INTERNAL",
+    "remediation_guidance": "Limit inventory adjustment permissions to supervisory roles. Require approval for adjustments above threshold."
+  },
+  {
+    "rule_id": "SOD-FIN-007",
+    "rule_name": "Payroll Processing vs. Employee Master Data",
+    "description": "Users who process payroll should not be able to create or modify employee records",
+    "rule_type": "FINANCIAL",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Process Payroll", "Create Employee"],
+        ["Process Payroll", "Edit Employee Banking Details"],
+        ["Run Payroll", "Edit Employee Salary"]
+      ]
+    },
+    "severity": "CRITICAL",
+    "regulatory_framework": "SOX",
+    "remediation_guidance": "Separate payroll processing from HR master data maintenance. Implement dual control for employee banking changes."
+  },
+  {
+    "rule_id": "SOD-FIN-008",
+    "rule_name": "Budget Creation vs. Budget Approval",
+    "description": "Users who create budgets should not be able to approve their own budgets",
+    "rule_type": "FINANCIAL",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Create Budget", "Approve Budget"],
+        ["Edit Budget", "Finalize Budget"]
+      ]
+    },
+    "severity": "MEDIUM",
+    "regulatory_framework": "INTERNAL",
+    "remediation_guidance": "Implement hierarchical budget approval workflow. Department budgets approved by management."
+  },
+  {
+    "rule_id": "SOD-SALES-001",
+    "rule_name": "Pricing Maintenance vs. Sales Order Entry",
+    "description": "Users who maintain pricing should not create sales orders to prevent unauthorized discounts",
+    "rule_type": "SALES",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Edit Item Price", "Create Sales Order"],
+        ["Edit Pricing Discounts", "Apply Manual Discount"],
+        ["Override Price", "Create Quote"]
+      ]
+    },
+    "severity": "MEDIUM",
+    "regulatory_framework": "INTERNAL",
+    "remediation_guidance": "Separate pricing administration from sales order entry. Implement discount approval workflows."
+  },
+  {
+    "rule_id": "SOD-SALES-002",
+    "rule_name": "Sales Commission Setup vs. Commission Processing",
+    "description": "Users who configure sales commission plans should not process or approve commission payments",
+    "rule_type": "SALES",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Edit Commission Plan", "Process Commission"],
+        ["Override Commission Rate", "Approve Commission Payment"]
+      ]
+    },
+    "severity": "HIGH",
+    "regulatory_framework": "INTERNAL",
+    "remediation_guidance": "Separate commission plan configuration from commission payment processing. Require management approval."
+  },
+  {
+    "rule_id": "SOD-IT-004",
+    "rule_name": "Custom Record Definition vs. Data Entry",
+    "description": "Users who can define custom records should not have mass data entry permissions",
+    "rule_type": "IT_ACCESS",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Customize Custom Records", "Mass Update Records"],
+        ["Define Custom Record Type", "CSV Import"]
+      ]
+    },
+    "severity": "MEDIUM",
+    "regulatory_framework": "INTERNAL",
+    "remediation_guidance": "Separate system configuration from data operations. Use version control for custom record definitions."
+  },
+  {
+    "rule_id": "SOD-COMP-001",
+    "rule_name": "Audit Log Access vs. Financial Transactions",
+    "description": "Users who can view or modify audit logs should not perform financial transactions",
+    "rule_type": "COMPLIANCE",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["View Audit Logs", "Financial Transactions"],
+        ["Clear Audit Logs", "Any Transaction Processing"]
+      ]
+    },
+    "severity": "HIGH",
+    "regulatory_framework": "SOX",
+    "remediation_guidance": "Restrict audit log access to compliance and IT security roles only. Ensure audit logs are immutable."
+  },
+  {
+    "rule_id": "SOD-COMP-002",
+    "rule_name": "Compliance Officer Independence",
+    "description": "Compliance officers should not have permissions to perform the activities they monitor",
+    "rule_type": "COMPLIANCE",
+    "conflicting_permissions": {
+      "conflicts": [
+        ["Compliance Officer", "Financial Approvals"],
+        ["Internal Auditor", "Transaction Processing"],
+        ["Risk Manager", "Budget Approval"]
+      ]
+    },
+    "severity": "CRITICAL",
+    "regulatory_framework": "SOX",
+    "remediation_guidance": "Ensure compliance and audit roles remain independent from operational functions. Use separate accounts."
+  }
+]

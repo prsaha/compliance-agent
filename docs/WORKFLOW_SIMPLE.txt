@@ -1,0 +1,151 @@
+SOD COMPLIANCE SYSTEM - WORKFLOW
+=================================
+
+▼ START: Trigger Compliance Scan
+│
+├─ 🎯 ORCHESTRATOR (LangGraph Workflow Coordinator)
+│
+├─── ━━━ STAGE 1: DATA COLLECTION ━━━
+│    │
+│    ├─ 1.1 📥 Data Collection Agent (Claude Sonnet 4.5)
+│    │   ├─ 1.1.1 Connect to NetSuite via OAuth 1.0a
+│    │   ├─ 1.1.2 Fetch active users with pagination
+│    │   └─ 1.1.3 Collect roles and permissions
+│    │
+│    ├─ 1.2 💾 Store in PostgreSQL
+│    │   ├─ Users table
+│    │   ├─ Roles table
+│    │   └─ UserRoles table
+│    │
+│    └─ 1.3 ✓ Success Check → Continue to Stage 2
+│
+├─── ━━━ STAGE 2: VIOLATION ANALYSIS ━━━
+│    │
+│    ├─ 2.1 🔍 Analysis Agent (Claude Opus 4.6)
+│    │   ├─ 2.1.1 Load 17 SOD rules
+│    │   ├─ 2.1.2 Analyze each user
+│    │   └─ 2.1.3 Detect permission conflicts
+│    │
+│    ├─ 2.2 📚 Knowledge Base Agent
+│    │   ├─ 2.2.1 Vector embedding search
+│    │   ├─ 2.2.2 Semantic rule matching
+│    │   └─ 2.2.3 Find similar violations
+│    │
+│    ├─ 2.3 💾 Store Violations
+│    │   ├─ Violations table
+│    │   ├─ Risk scores (0-100)
+│    │   └─ Metadata & remediation
+│    │
+│    └─ 2.4 ✓ Success Check → Continue to Stage 3
+│
+├─── ━━━ STAGE 3: RISK ASSESSMENT ━━━
+│    │
+│    ├─ 3.1 ⚠️  Risk Assessment Agent (Claude Opus 4.6)
+│    │   ├─ 3.1.1 Calculate individual user risk
+│    │   ├─ 3.1.2 Analyze historical patterns
+│    │   ├─ 3.1.3 Detect trends (↑/→/↓)
+│    │   ├─ 3.1.4 Predict future risk (30/60/90 days)
+│    │   └─ 3.1.5 Calculate organization risk
+│    │
+│    ├─ 3.2 💾 Store Risk Data
+│    │   ├─ Risk scores & levels
+│    │   ├─ Trend analysis
+│    │   └─ Predictions & recommendations
+│    │
+│    └─ 3.3 ✓ Success Check → Continue to Stage 4
+│
+├─── ━━━ STAGE 4: NOTIFICATIONS ━━━
+│    │
+│    ├─ 4.1 📧 Notification Agent (Multi-Channel)
+│    │   ├─ 4.1.1 Email via SendGrid
+│    │   ├─ 4.1.2 Slack via Webhooks
+│    │   └─ 4.1.3 Console logging (fallback)
+│    │
+│    ├─ 4.2 Check Severity
+│    │   ├─ Critical violations?
+│    │   └─ Route by priority level
+│    │
+│    ├─ 4.3 🚨 Alert Compliance Team (if critical)
+│    │   ├─ URGENT priority
+│    │   ├─ Immediate action required
+│    │   └─ Escalation workflow
+│    │
+│    └─ 4.4 📝 Log Notification → Continue to Stage 5
+│
+├─── ━━━ STAGE 5: FINALIZATION ━━━
+│    │
+│    ├─ 5.1 Create Audit Trail
+│    │   ├─ Scan ID & timestamps
+│    │   ├─ Error log (if any)
+│    │   └─ Agent actions
+│    │
+│    ├─ 5.2 Generate Summary Statistics
+│    │   ├─ Users analyzed: N
+│    │   ├─ Violations detected: N
+│    │   ├─ Duration: N seconds
+│    │   └─ Status: SUCCESS/PARTIAL/FAILED
+│    │
+│    └─ 5.3 💾 Store Scan Results
+│        └─ ComplianceScans table
+│
+└─ ■ COMPLETE: Scan Finished
+   │
+   ├─ 📡 Results Available via API (17 endpoints)
+   │   └─ http://localhost:8000/docs
+   │
+   └─ ⏰ Next Scan Scheduled
+       └─ Celery Beat (every 4 hours)
+
+
+ERROR HANDLING
+==============
+
+If any stage fails:
+  ├─ ⚠️  Error Handler Triggered
+  │
+  ├─ Retry Logic (max 3 attempts)
+  │   ├─ ⏱️  Wait 5 minutes
+  │   └─ Retry failed stage
+  │
+  └─ If all retries fail:
+      └─ ❌ Manual Review Required
+          ├─ Alert administrators
+          └─ Log detailed error
+
+
+EXECUTION TIMELINE
+==================
+
+Total Duration: ~60-80 seconds (1,933 users)
+
+Stage 1: Data Collection      ████████████░░░░░░░░  30-40s  (50%)
+Stage 2: Violation Analysis   ██████░░░░░░░░░░░░░░  15-20s  (25%)
+Stage 3: Risk Assessment      ████░░░░░░░░░░░░░░░░  10-15s  (15%)
+Stage 4: Notifications        ██░░░░░░░░░░░░░░░░░░   2-5s   (5%)
+Stage 5: Finalization         █░░░░░░░░░░░░░░░░░░░   1-2s   (3%)
+
+
+AGENTS SUMMARY
+==============
+
+🎯 Orchestrator          - LangGraph workflow coordinator
+📥 Data Collector        - NetSuite integration (Sonnet 4.5)
+🔍 Analyzer             - SOD violation detection (Opus 4.6)
+⚠️  Risk Assessor        - Risk scoring & trends (Opus 4.6)
+📚 Knowledge Base       - Vector embeddings & search
+📧 Notifier             - Email/Slack/Console alerts
+
+
+INFRASTRUCTURE
+==============
+
+Database:   PostgreSQL 16 + pgvector (9 tables)
+Queue:      Celery + Redis
+API:        FastAPI (17 endpoints)
+AI:         Claude Opus 4.6 + Sonnet 4.5
+External:   NetSuite, SendGrid, Slack
+
+
+STATUS: ✅ PRODUCTION READY
+Version: 1.0.0
+Last Updated: 2026-02-09

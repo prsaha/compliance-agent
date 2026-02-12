@@ -1,0 +1,134 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Poetry
+poetry.lock
+
+# PyCharm
+.idea/
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Database backups
+*.sql
+!database/schema.sql
+backup_*.sql
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# Sensitive data
+.env.local
+.env.production
+secrets/
+credentials/
+
+# API Keys (backup check)
+*_api_key.txt
+*_token.txt
+
+# Docker volumes data (if accidentally created locally)
+postgres_data/
+redis_data/
+
+# Generated documentation
+site/
+
+# Cache
+.cache/
+*.cache
+
+# Monitoring data
+grafana_data/
+prometheus_data/
+
+# Local development files
+scratch/
+temp/
+test_output/
+
+# IDE-specific
+*.sublime-project
+*.sublime-workspace
+
+# macOS
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+desktop.ini
+$RECYCLE.BIN/
+
+# Output files from scripts
+output/
+reports/
+
+# Test databases
+*.db
+test_compliance.db
+compliance.db
