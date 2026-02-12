@@ -13,9 +13,13 @@ import os
 import sys
 import logging
 from pathlib import Path
+from dotenv import load_dotenv
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
+
+# Load environment variables from .env
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(

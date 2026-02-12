@@ -10,15 +10,16 @@ from datetime import datetime
 import asyncio
 
 # Import existing agents
-from agents.analysis_agent import AnalysisAgent
+from agents.analyzer import SODAnalysisAgent
 from agents.notifier import NotificationAgent
-from agents.knowledge_base_pgvector import KnowledgeBaseAgent
+from agents.knowledge_base_pgvector import KnowledgeBaseAgentPgvector
 
 # Import connectors
 from connectors.netsuite_connector import NetSuiteConnector
 
 # Import repositories
 from repositories.user_repository import UserRepository
+from repositories.role_repository import RoleRepository
 from repositories.violation_repository import ViolationRepository
 from repositories.sod_rule_repository import SODRuleRepository
 
@@ -50,21 +51,24 @@ class ComplianceOrchestrator:
 
         # Initialize repositories
         self.user_repo = UserRepository(self.session)
+        self.role_repo = RoleRepository(self.session)
         self.violation_repo = ViolationRepository(self.session)
         self.rule_repo = SODRuleRepository(self.session)
 
         # Initialize agents
-        self.analysis_agent = AnalysisAgent(
-            rule_repo=self.rule_repo,
+        self.analysis_agent = SODAnalysisAgent(
             user_repo=self.user_repo,
-            violation_repo=self.violation_repo
+            role_repo=self.role_repo,
+            violation_repo=self.violation_repo,
+            sod_rule_repo=self.rule_repo
         )
         self.notifier_agent = NotificationAgent(
             violation_repo=self.violation_repo,
             user_repo=self.user_repo,
             enable_cache=True  # Enable Redis caching
         )
-        self.kb_agent = KnowledgeBaseAgent(
+        self.kb_agent = KnowledgeBaseAgentPgvector(
+            session=self.session,
             sod_rule_repo=self.rule_repo
         )
 
