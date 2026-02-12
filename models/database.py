@@ -12,6 +12,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import UUID
+from pgvector.sqlalchemy import Vector
 import uuid
 import enum
 
@@ -178,7 +179,7 @@ class Role(Base):
     description = Column(Text)
     permission_count = Column(Integer, default=0)
     permissions = Column(JSON)  # Store permissions as JSON
-    embedding = Column(String)  # pgvector for semantic search (stored as string for now)
+    embedding = Column(Vector(384))  # pgvector for semantic search
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -225,7 +226,7 @@ class SODRule(Base):
     conflicting_permissions = Column(JSON)  # List of conflicting permission patterns
     severity = Column(SQLEnum(ViolationSeverity), default=ViolationSeverity.MEDIUM)
     is_active = Column(Boolean, default=True)
-    embedding = Column(String)  # pgvector for semantic search
+    embedding = Column(Vector(384))  # pgvector for semantic search
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -259,7 +260,7 @@ class Violation(Base):
     resolved_by = Column(String(255))
     resolution_notes = Column(Text)
 
-    embedding = Column(String)  # pgvector for similar violation search
+    embedding = Column(Vector(384))  # pgvector for similar violation search
     violation_metadata = Column(JSON)  # Additional context
 
     # Relationships
@@ -574,3 +575,80 @@ class DeactivationLog(Base):
 
     def __repr__(self):
         return f"<DeactivationLog(email='{self.email}', action='{self.action}', status='{self.status}')>"
+
+
+# Phase 3: Learning & Refinement Models
+
+class ExemptionStatus(enum.Enum):
+    """Exemption request status"""
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+    REVOKED = "REVOKED"
+
+
+class ViolationExemption(Base):
+    """Approved exemptions for SOD violations (Phase 3: Learning Loop)"""
+    __tablename__ = 'violation_exemptions'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # References
+    violation_id = Column(UUID(as_uuid=True), ForeignKey('violations.id'))
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id'))
+    rule_id = Column(UUID(as_uuid=True), ForeignKey('sod_rules.id'))
+
+    # Exemption details
+    reason = Column(String(500), nullable=False)
+    rationale = Column(Text, nullable=False)  # Detailed business justification
+    business_justification = Column(Text)
+    compensating_controls = Column(Text)  # What controls mitigate the risk
+
+    # Approval workflow
+    status = Column(SQLEnum(ExemptionStatus), default=ExemptionStatus.PENDING, index=True)
+    requested_by = Column(String(255), nullable=False)
+    requested_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    approved_by = Column(String(255))
+    approved_at = Column(DateTime)
+    approval_notes = Column(Text)
+
+    rejected_by = Column(String(255))
+    rejected_at = Column(DateTime)
+    rejection_reason = Column(Text)
+
+    # Expiration and review
+    expires_at = Column(DateTime)  # Exemptions should be reviewed periodically
+    last_reviewed_at = Column(DateTime)
+    next_review_date = Column(DateTime, index=True)
+    auto_approved = Column(Boolean, default=False)
+
+    # Risk assessment
+    risk_score = Column(Float)  # Risk score at time of approval
+    risk_acceptance_level = Column(String(50))  # HIGH, MEDIUM, LOW
+
+    # Embedding for similarity search (Phase 3: Learn from approved exemptions)
+    embedding = Column(Vector(384))  # pgvector for finding similar exemption cases
+
+    # Audit trail
+    exemption_metadata = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    violation = relationship("Violation", foreign_keys=[violation_id])
+    user = relationship("User", foreign_keys=[user_id])
+    rule = relationship("SODRule", foreign_keys=[rule_id])
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_exemption_status', 'status'),
+        Index('idx_exemption_user', 'user_id'),
+        Index('idx_exemption_rule', 'rule_id'),
+        Index('idx_exemption_requested_at', 'requested_at'),
+        Index('idx_exemption_next_review', 'next_review_date'),
+    )
+
+    def __repr__(self):
+        return f"<ViolationExemption(id='{self.id}', status='{self.status}', reason='{self.reason[:50]}...')>"
