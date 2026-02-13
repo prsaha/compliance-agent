@@ -106,7 +106,8 @@ class KnowledgeBaseEnricher:
             List of floats (384-dimension vector)
         """
         try:
-            embedding = self.embedding_service.embed_query(text)
+            # Use the model's embed_query method
+            embedding = self.embedding_service.model.embed_query(text)
             return embedding
         except Exception as e:
             logger.error(f"✗ Failed to generate embedding: {e}")
@@ -176,9 +177,7 @@ class KnowledgeBaseEnricher:
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT rule_id, rule_name, description, severity,
-                   risk_category, conflicting_permissions,
-                   business_justification, typical_controls,
-                   metadata_col as metadata
+                   category, conflicting_permissions, principle
             FROM sod_rules
             WHERE is_active = true
         """)
@@ -187,22 +186,20 @@ class KnowledgeBaseEnricher:
         logger.info(f"Found {len(rules)} active SOD rules")
 
         for rule in rules:
-            rule_id, rule_name, description, severity, risk_category, \
-                conflicting_perms, business_just, typical_controls, metadata = rule
+            rule_id, rule_name, description, severity, category, \
+                conflicting_perms, principle = rule
+            metadata = {}
 
             # Build content for embedding
             content = f"""
 SOD Rule: {rule_name}
 Severity: {severity}
-Risk Category: {risk_category}
+Category: {category or 'N/A'}
+Principle: {principle or 'N/A'}
 
-Description: {description}
+Description: {description or 'N/A'}
 
 Conflicting Permissions: {', '.join(conflicting_perms) if conflicting_perms else 'N/A'}
-
-Business Justification: {business_just or 'N/A'}
-
-Typical Controls: {', '.join(typical_controls) if typical_controls else 'N/A'}
             """.strip()
 
             # Generate embedding
@@ -215,7 +212,7 @@ Typical Controls: {', '.join(typical_controls) if typical_controls else 'N/A'}
                 'title': rule_name,
                 'content': content,
                 'embedding': embedding,
-                'tags': [severity.lower(), risk_category.lower() if risk_category else 'general'],
+                'tags': [severity.lower() if severity else 'medium', category.lower() if category else 'general'],
                 'category': 'compliance',
                 'reference_id': rule_id,
                 'reference_table': 'sod_rules',
@@ -236,8 +233,8 @@ Typical Controls: {', '.join(typical_controls) if typical_controls else 'N/A'}
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT control_id, name, description, control_type,
-                   risk_reduction_percentage, implementation_effort,
-                   recurring_cost, suitable_for_severities, metadata_col as metadata
+                   risk_reduction_percentage, implementation_time_hours,
+                   annual_cost_estimate, metadata
             FROM compensating_controls
             WHERE is_active = true
         """)
@@ -247,20 +244,18 @@ Typical Controls: {', '.join(typical_controls) if typical_controls else 'N/A'}
 
         for control in controls:
             control_id, name, description, control_type, risk_reduction, \
-                impl_effort, cost, severities, metadata = control
+                impl_time, cost, metadata = control
 
             # Build content for embedding
             content = f"""
 Compensating Control: {name}
-Type: {control_type}
+Type: {control_type or 'N/A'}
 Risk Reduction: {risk_reduction}%
 
 Description: {description}
 
-Implementation Effort: {impl_effort}
-Recurring Cost: ${cost}/year
-
-Suitable for Severities: {', '.join(severities) if severities else 'All'}
+Implementation Time: {impl_time or 'N/A'} hours
+Annual Cost: {cost or 'N/A'}
             """.strip()
 
             # Generate embedding
@@ -293,9 +288,9 @@ Suitable for Severities: {', '.join(severities) if severities else 'All'}
 
         cursor = self.conn.cursor()
         cursor.execute("""
-            SELECT package_id, name, description, total_risk_reduction,
-                   included_controls, estimated_annual_cost,
-                   implementation_time_hours, target_severity, metadata_col as metadata
+            SELECT package_id, package_name, description, total_risk_reduction,
+                   included_control_ids, estimated_annual_cost,
+                   implementation_time_hours, severity_level, metadata
             FROM control_packages
             WHERE is_active = true
         """)
@@ -304,21 +299,21 @@ Suitable for Severities: {', '.join(severities) if severities else 'All'}
         logger.info(f"Found {len(packages)} active control packages")
 
         for package in packages:
-            package_id, name, description, risk_reduction, controls, \
+            package_id, name, description, risk_reduction, control_ids, \
                 cost, impl_time, severity, metadata = package
 
             # Build content for embedding
             content = f"""
 Control Package: {name}
-Target Severity: {severity}
+Target Severity: {severity or 'N/A'}
 Total Risk Reduction: {risk_reduction}%
 
-Description: {description}
+Description: {description or 'N/A'}
 
-Included Controls: {', '.join(controls) if controls else 'N/A'}
+Included Controls: {', '.join(control_ids) if control_ids else 'N/A'}
 
-Estimated Annual Cost: ${cost}
-Implementation Time: {impl_time} hours
+Estimated Annual Cost: {cost or 'N/A'}
+Implementation Time: {impl_time or 'N/A'} hours
             """.strip()
 
             # Generate embedding
@@ -354,7 +349,7 @@ Implementation Time: {impl_time} hours
             SELECT job_role_id, job_title, department,
                    typical_netsuite_roles, business_justification,
                    requires_compensating_controls, typical_controls,
-                   metadata_col as metadata
+                   metadata
             FROM job_role_mappings
             WHERE is_active = true
         """)
@@ -419,31 +414,24 @@ Typical Controls: {', '.join(controls) if controls else 'N/A'}
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT category_id, category_name, description,
-                   base_risk, base_risk_score, conflicts_with,
-                   keywords, patterns, metadata_col as metadata
+                   base_risk_score, level_risk_adjustments
             FROM permission_categories
-            WHERE is_active = true
         """)
 
         categories = cursor.fetchall()
-        logger.info(f"Found {len(categories)} active permission categories")
+        logger.info(f"Found {len(categories)} permission categories")
 
         for category in categories:
-            category_id, category_name, description, base_risk, \
-                risk_score, conflicts_with, keywords, patterns, metadata = category
+            category_id, category_name, description, risk_score, level_adjustments = category
 
             # Build content for embedding
             content = f"""
 Permission Category: {category_name}
-Base Risk: {base_risk} (Score: {risk_score}/100)
+Base Risk Score: {risk_score or 50}/100
 
 Description: {description or 'N/A'}
 
-Conflicts With: {', '.join(conflicts_with) if conflicts_with else 'None'}
-
-Keywords: {', '.join(keywords) if keywords else 'N/A'}
-
-Patterns: {', '.join(patterns) if patterns else 'N/A'}
+Level Risk Adjustments: {level_adjustments if level_adjustments else 'Standard'}
             """.strip()
 
             # Generate embedding
@@ -456,11 +444,11 @@ Patterns: {', '.join(patterns) if patterns else 'N/A'}
                 'title': category_name,
                 'content': content,
                 'embedding': embedding,
-                'tags': [base_risk.lower() if base_risk else 'medium'],
+                'tags': ['permissions'],
                 'category': 'permissions',
                 'reference_id': category_id,
                 'reference_table': 'permission_categories',
-                'metadata': metadata or {}
+                'metadata': {'risk_score': risk_score}
             })
 
             self.stats['permission_categories'] += 1
