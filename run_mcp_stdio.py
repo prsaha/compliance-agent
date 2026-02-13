@@ -35,12 +35,7 @@ async def main():
     try:
         # Import here to avoid loading issues
         from mcp.mcp_tools import (
-            list_systems_handler,
-            perform_access_review_handler,
-            get_user_violations_handler,
-            remediate_violation_handler,
-            schedule_review_handler,
-            get_violation_stats_handler,
+            get_tool_handler,
             TOOLS
         )
 
@@ -86,21 +81,12 @@ async def main():
                     tool_name = request["params"]["name"]
                     arguments = request["params"].get("arguments", {})
 
-                    # Route to appropriate handler
-                    if tool_name == "list_systems":
-                        result_text = await list_systems_handler()
-                    elif tool_name == "perform_access_review":
-                        result_text = await perform_access_review_handler(**arguments)
-                    elif tool_name == "get_user_violations":
-                        result_text = await get_user_violations_handler(**arguments)
-                    elif tool_name == "remediate_violation":
-                        result_text = await remediate_violation_handler(**arguments)
-                    elif tool_name == "schedule_review":
-                        result_text = await schedule_review_handler(**arguments)
-                    elif tool_name == "get_violation_stats":
-                        result_text = await get_violation_stats_handler(**arguments)
-                    else:
+                    # Route to appropriate handler using registry
+                    handler = get_tool_handler(tool_name)
+                    if not handler:
                         raise ValueError(f"Unknown tool: {tool_name}")
+
+                    result_text = await handler(**arguments)
 
                     response = {
                         "jsonrpc": "2.0",

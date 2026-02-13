@@ -7,7 +7,9 @@ from typing import List, Dict, Any, Optional
 import logging
 import asyncio
 import os
+from datetime import datetime, timedelta
 from functools import lru_cache
+from sqlalchemy import text
 from .orchestrator import ComplianceOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -492,6 +494,207 @@ TOOL_SCHEMAS = {
                 }
             },
             "required": ["role_name"]
+        }
+    },
+
+    "record_exception_approval": {
+        "description": "Record approval of a SOD exception with compensating controls. Creates a permanent record of approved role combinations that violate SOD rules, along with the controls required to mitigate the risk. Use this after analyzing an access request that has conflicts but is approved with controls.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "user_identifier": {
+                    "type": "string",
+                    "description": "User email or ID"
+                },
+                "user_name": {
+                    "type": "string",
+                    "description": "Full name of the user"
+                },
+                "role_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of role names being approved"
+                },
+                "conflict_count": {
+                    "type": "integer",
+                    "description": "Total number of SOD conflicts detected"
+                },
+                "critical_conflicts": {
+                    "type": "integer",
+                    "description": "Number of CRITICAL severity conflicts"
+                },
+                "risk_score": {
+                    "type": "number",
+                    "description": "Overall risk score (0-100)"
+                },
+                "business_justification": {
+                    "type": "string",
+                    "description": "Business reason for approving this exception"
+                },
+                "approved_by": {
+                    "type": "string",
+                    "description": "Name of the approver"
+                },
+                "approval_authority": {
+                    "type": "string",
+                    "description": "Title/role of approver (e.g., 'CFO', 'VP Compliance')"
+                },
+                "job_title": {
+                    "type": "string",
+                    "description": "User's job title"
+                },
+                "department": {
+                    "type": "string",
+                    "description": "User's department"
+                },
+                "compensating_controls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "control_name": {"type": "string"},
+                            "risk_reduction_percentage": {"type": "number"},
+                            "estimated_annual_cost": {"type": "number"}
+                        }
+                    },
+                    "description": "List of compensating controls being implemented"
+                },
+                "review_frequency": {
+                    "type": "string",
+                    "enum": ["Monthly", "Quarterly", "Annually"],
+                    "description": "How often this exception should be reviewed",
+                    "default": "Quarterly"
+                },
+                "expiration_days": {
+                    "type": "integer",
+                    "description": "Number of days until exception expires (optional)"
+                }
+            },
+            "required": ["user_identifier", "user_name", "role_names", "conflict_count", "risk_score", "business_justification", "approved_by"]
+        }
+    },
+
+    "find_similar_exceptions": {
+        "description": "Find previously approved exceptions similar to a proposed role combination. Uses similarity matching (70% role overlap + 20% job title + 10% department) to find precedents. Returns top 3 matches with their controls, costs, and effectiveness. Use this BEFORE approving new exceptions to leverage existing control frameworks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "role_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Role names to search for similar exceptions"
+                },
+                "job_title": {
+                    "type": "string",
+                    "description": "Optional job title for better matching"
+                },
+                "department": {
+                    "type": "string",
+                    "description": "Optional department for better matching"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of similar exceptions to return",
+                    "default": 3
+                }
+            },
+            "required": ["role_names"]
+        }
+    },
+
+    "get_exception_details": {
+        "description": "Get complete details of a specific approved exception including all controls, violations, and review history. Use this to review the status and effectiveness of an existing exception.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "exception_code": {
+                    "type": "string",
+                    "description": "Exception code (e.g., 'EXC-2026-001')"
+                }
+            },
+            "required": ["exception_code"]
+        }
+    },
+
+    "list_approved_exceptions": {
+        "description": "List all approved SOD exceptions with optional filters. Returns paginated summary view of exceptions with status, user, roles, and control counts. Use this to browse or audit approved exceptions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["ACTIVE", "VIOLATED", "REMEDIATED", "EXPIRED", "REVOKED"],
+                    "description": "Filter by exception status"
+                },
+                "user_identifier": {
+                    "type": "string",
+                    "description": "Filter by user email or ID"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results",
+                    "default": 10
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Pagination offset",
+                    "default": 0
+                }
+            },
+            "required": []
+        }
+    },
+
+    "record_exception_violation": {
+        "description": "Record a violation of an approved exception (compensating control failure). Use this when monitoring detects that a required control was bypassed or failed. Automatically updates exception status to VIOLATED and triggers review process.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "exception_code": {
+                    "type": "string",
+                    "description": "Exception code (e.g., 'EXC-2026-001')"
+                },
+                "violation_type": {
+                    "type": "string",
+                    "description": "Type of violation (e.g., 'Unauthorized Transaction', 'Control Bypass')"
+                },
+                "severity": {
+                    "type": "string",
+                    "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+                    "description": "Severity of the violation"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Detailed description of what happened"
+                },
+                "failed_control_name": {
+                    "type": "string",
+                    "description": "Name of the control that failed"
+                },
+                "failure_reason": {
+                    "type": "string",
+                    "description": "Why the control failed"
+                },
+                "detected_by": {
+                    "type": "string",
+                    "description": "Who/what detected the violation",
+                    "default": "Automated Monitoring"
+                },
+                "detection_method": {
+                    "type": "string",
+                    "description": "How the violation was detected"
+                }
+            },
+            "required": ["exception_code", "violation_type", "severity", "description", "failed_control_name"]
+        }
+    },
+
+    "get_exception_effectiveness_stats": {
+        "description": "Get dashboard statistics on exception effectiveness including total costs, violation rates, control effectiveness, and ROI analysis. Use this for compliance reporting and to identify poorly performing exceptions that need review.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": []
         }
     }
 }
@@ -1128,6 +1331,47 @@ async def analyze_access_request_handler(
 
             if len(analysis['conflicts']) > 5:
                 output += f"_...and {len(analysis['conflicts']) - 5} more conflicts_\n\n"
+
+        # NEW: Search for similar approved exceptions (precedents)
+        if conflicts_found > 0:
+            try:
+                precedents_result = await find_similar_exceptions_handler(
+                    role_names=requested_roles,
+                    job_title=job_title,
+                    limit=2  # Show top 2 matches only in analysis
+                )
+
+                # Only show precedents if we found some
+                if precedents_result and "No Similar Exceptions Found" not in precedents_result:
+                    output += "---\n\n"
+                    output += "💡 **SIMILAR APPROVED PRECEDENTS**\n\n"
+                    output += "_Found previously approved exceptions with similar role combinations:_\n\n"
+
+                    # Extract just the match summaries (simplified view)
+                    lines = precedents_result.split('\n')
+                    in_match_section = False
+                    match_count = 0
+                    for line in lines:
+                        if line.strip().startswith('🟢') or line.strip().startswith('🟡') or line.strip().startswith('🟠'):
+                            in_match_section = True
+                            match_count += 1
+                            if match_count <= 2:  # Only show first 2
+                                output += line + '\n'
+                        elif in_match_section and match_count <= 2:
+                            if line.strip().startswith('---'):
+                                in_match_section = False
+                                if match_count < 2:
+                                    output += line + '\n'
+                                else:
+                                    break
+                            elif line.strip():
+                                output += line + '\n'
+
+                    output += "\n_Use `find_similar_exceptions([role_names])` for complete precedent details._\n\n"
+            except Exception as e:
+                logger.warning(f"Could not fetch precedents: {str(e)}")
+                # Don't fail the entire analysis if precedent search fails
+                pass
 
         # Resolutions
         if analysis.get('resolutions'):
@@ -2134,6 +2378,772 @@ Use `analyze_access_request` to check if specific users have additional conflict
 
 
 # ============================================================================
+# EXCEPTION MANAGEMENT HANDLERS
+# ============================================================================
+
+async def record_exception_approval_handler(
+    user_identifier: str,
+    user_name: str,
+    role_names: List[str],
+    conflict_count: int,
+    risk_score: float,
+    business_justification: str,
+    approved_by: str,
+    approval_authority: str = None,
+    job_title: str = None,
+    department: str = None,
+    critical_conflicts: int = 0,
+    compensating_controls: List[Dict[str, Any]] = None,
+    review_frequency: str = "Quarterly",
+    expiration_days: int = None
+) -> str:
+    """
+    Record an approved SOD exception with compensating controls
+
+    Returns:
+        Formatted confirmation with exception code and control summary
+    """
+    try:
+        logger.info(f"Recording exception approval for user: {user_identifier}")
+
+        from models.database_config import DatabaseConfig
+        from repositories.exception_repository import ExceptionRepository
+        from repositories.user_repository import UserRepository
+        from repositories.role_repository import RoleRepository
+        from datetime import datetime, timedelta
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+
+        exception_repo = ExceptionRepository(session)
+        user_repo = UserRepository(session)
+        role_repo = RoleRepository(session)
+
+        # Get user UUID
+        user = user_repo.get_user_by_email(user_identifier)
+        if not user:
+            user = user_repo.get_user_by_id(user_identifier)
+        if not user:
+            return f"❌ User not found: {user_identifier}\n\nPlease ensure the user exists in the system first."
+
+        # Convert role names to IDs
+        role_ids = []
+        for role_name in role_names:
+            role = role_repo.get_role_by_name(role_name)
+            if role:
+                role_ids.append(role.id)
+            else:
+                logger.warning(f"Role not found: {role_name}")
+
+        # Calculate expiration date if provided
+        expires_at = None
+        if expiration_days:
+            expires_at = datetime.utcnow() + timedelta(days=expiration_days)
+
+        # Create exception
+        exception = exception_repo.create_exception(
+            user_id=user.id,
+            user_name=user_name,
+            role_ids=role_ids,
+            role_names=role_names,
+            conflict_count=conflict_count,
+            critical_conflicts=critical_conflicts,
+            risk_score=risk_score,
+            business_justification=business_justification,
+            approved_by=approved_by,
+            approval_authority=approval_authority,
+            job_title=job_title,
+            department=department,
+            review_frequency=review_frequency,
+            expires_at=expires_at
+        )
+
+        # Add compensating controls if provided
+        total_cost = 0
+        combined_risk_reduction = 0
+        if compensating_controls:
+            for control in compensating_controls:
+                # Look up control by name in compensating_controls table
+                control_name = control.get('control_name', '')
+                control_query = session.query(text("SELECT id FROM compensating_controls WHERE name ILIKE :name LIMIT 1"))
+                result = session.execute(text("SELECT id FROM compensating_controls WHERE name ILIKE :name LIMIT 1"), {"name": f"%{control_name}%"}).fetchone()
+
+                if result:
+                    control_id = result[0]
+                else:
+                    # Use default dual approval if not found
+                    result = session.execute(text("SELECT id FROM compensating_controls WHERE control_id = 'dual_approval_workflow' LIMIT 1")).fetchone()
+                    control_id = result[0] if result else None
+
+                if control_id:
+                    control_record = exception_repo.add_control_to_exception(
+                        exception.exception_id,
+                        control_id=control_id,
+                        estimated_annual_cost=control.get('estimated_annual_cost', 0),
+                        risk_reduction_percentage=control.get('risk_reduction_percentage', 0)
+                    )
+                    total_cost += control.get('estimated_annual_cost', 0)
+                else:
+                    logger.warning(f"Control not found and no default available: {control_name}")
+
+        session.commit()
+
+        # Format response
+        output = f"""✅ **Exception Approved and Recorded**
+
+**Exception Code:** `{exception.exception_code}`
+**User:** {user_name} ({user_identifier})
+**Status:** {exception.status.value}
+
+**Conflict Summary:**
+• Total Conflicts: {conflict_count}
+• Critical Conflicts: {critical_conflicts}
+• Risk Score: {risk_score:.1f}/100
+
+**Approved Role Combination:**
+"""
+        for i, role in enumerate(role_names, 1):
+            output += f"{i}. {role}\n"
+
+        if compensating_controls:
+            output += f"\n**Compensating Controls ({len(compensating_controls)}):**\n"
+            for i, control in enumerate(compensating_controls, 1):
+                ctrl_name = control.get('control_name', 'Unnamed Control')
+                risk_red = control.get('risk_reduction_percentage', 0)
+                cost = control.get('estimated_annual_cost', 0)
+                output += f"{i}. {ctrl_name}\n"
+                output += f"   └─ Risk Reduction: {risk_red}%\n"
+                output += f"   └─ Annual Cost: ${cost:,.0f}\n"
+
+            output += f"\n**Total Annual Cost:** ${total_cost:,.0f}\n"
+
+        output += f"\n**Review Schedule:** {review_frequency}"
+        if expires_at:
+            output += f"\n**Expires:** {expires_at.strftime('%Y-%m-%d')}"
+
+        output += f"\n**Approved By:** {approved_by}"
+        if approval_authority:
+            output += f" ({approval_authority})"
+
+        output += f"\n\n**Business Justification:**\n{business_justification}"
+
+        output += f"\n\n💡 **Next Steps:**\n"
+        output += f"• Implement all compensating controls\n"
+        output += f"• Set up {review_frequency.lower()} review calendar\n"
+        output += f"• Monitor for violations using exception tracking\n"
+        output += f"• Use `get_exception_details('{exception.exception_code}')` to check status"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in record_exception_approval_handler: {str(e)}", exc_info=True)
+        return f"❌ Error recording exception approval: {str(e)}"
+
+
+async def find_similar_exceptions_handler(
+    role_names: List[str],
+    job_title: str = None,
+    department: str = None,
+    limit: int = 3
+) -> str:
+    """
+    Find similar previously approved exceptions
+
+    Returns:
+        Formatted list of similar exceptions with similarity scores
+    """
+    try:
+        logger.info(f"Finding similar exceptions for roles: {role_names}")
+
+        from models.database_config import DatabaseConfig
+        from repositories.exception_repository import ExceptionRepository
+        from repositories.role_repository import RoleRepository
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+
+        exception_repo = ExceptionRepository(session)
+        role_repo = RoleRepository(session)
+
+        # Convert role names to IDs
+        role_ids = []
+        for role_name in role_names:
+            role = role_repo.get_role_by_name(role_name)
+            if role:
+                role_ids.append(role.id)
+
+        if not role_ids:
+            return f"❌ No matching roles found for: {', '.join(role_names)}"
+
+        # Find similar exceptions
+        similar = exception_repo.find_similar_exceptions(
+            role_ids=role_ids,
+            job_title=job_title,
+            department=department,
+            limit=limit
+        )
+
+        if not similar:
+            output = f"📝 **No Similar Exceptions Found**\n\n"
+            output += f"**Searched For:**\n"
+            output += f"• Roles: {', '.join(role_names)}\n"
+            if job_title:
+                output += f"• Job Title: {job_title}\n"
+            if department:
+                output += f"• Department: {department}\n"
+            output += f"\n💡 This appears to be a novel role combination. You may need to design new compensating controls."
+            return output
+
+        # Format response
+        output = f"💡 **Similar Approved Exceptions Found** ({len(similar)})\n\n"
+        output += f"**Searching for:**\n"
+        output += f"• Roles: {', '.join(role_names)}\n"
+        if job_title:
+            output += f"• Job Title: {job_title}\n"
+        if department:
+            output += f"• Department: {department}\n"
+        output += f"\n---\n\n"
+
+        for i, (exception, similarity) in enumerate(similar, 1):
+            similarity_pct = similarity * 100
+            emoji = "🟢" if similarity >= 0.9 else "🟡" if similarity >= 0.7 else "🟠"
+
+            output += f"{emoji} **Match #{i}: {exception.exception_code}** ({similarity_pct:.0f}% similar)\n"
+            output += f"**User:** {exception.user_name}\n"
+            if exception.job_title:
+                output += f"**Job Title:** {exception.job_title}\n"
+            if exception.department:
+                output += f"**Department:** {exception.department}\n"
+
+            output += f"**Status:** {exception.status.value}\n"
+            output += f"**Approved:** {exception.approved_date.strftime('%Y-%m-%d')}\n"
+            output += f"**Risk Score:** {exception.risk_score:.1f}/100\n"
+
+            output += f"\n**Roles ({len(exception.role_names)}):**\n"
+            for role in exception.role_names:
+                output += f"  • {role}\n"
+
+            # Get controls
+            controls = exception_repo.get_exception_controls(exception.exception_id)
+            if controls:
+                output += f"\n**Compensating Controls ({len(controls)}):**\n"
+                total_cost = 0
+                for control in controls:
+                    output += f"  • Control (Risk Reduction: {control.risk_reduction_percentage or 0}%)\n"
+                    if control.estimated_annual_cost:
+                        total_cost += control.estimated_annual_cost
+
+                if total_cost > 0:
+                    output += f"  └─ **Total Annual Cost:** ${total_cost:,.0f}\n"
+
+            output += f"\n"
+
+            if i == 1 and similarity >= 0.8:
+                output += f"✅ **Recommendation:** This exception is highly similar (≥80%). Consider using the same control framework.\n\n"
+
+            output += f"---\n\n"
+
+        output += f"💡 **Next Steps:**\n"
+        output += f"• Review controls from best match for reusability\n"
+        output += f"• Use `get_exception_details('<code>')` for full details\n"
+        output += f"• Adapt controls to your specific situation\n"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in find_similar_exceptions_handler: {str(e)}", exc_info=True)
+        return f"❌ Error finding similar exceptions: {str(e)}"
+
+
+async def get_exception_details_handler(
+    exception_code: str
+) -> str:
+    """
+    Get complete details of a specific exception
+
+    Returns:
+        Full exception report including controls, violations, and reviews
+    """
+    try:
+        logger.info(f"Getting exception details: {exception_code}")
+
+        from models.database_config import DatabaseConfig
+        from repositories.exception_repository import ExceptionRepository
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+
+        exception_repo = ExceptionRepository(session)
+
+        # Get exception by code
+        exception = exception_repo.get_by_code(exception_code)
+
+        if not exception:
+            return f"❌ Exception not found: {exception_code}\n\nUse `list_approved_exceptions()` to see available exceptions."
+
+        # Get related data
+        controls = exception_repo.get_exception_controls(exception.exception_id)
+        violations = exception_repo.get_exception_violations(exception.exception_id)
+        reviews = exception_repo.get_exception_reviews(exception.exception_id)
+
+        # Format response
+        status_emoji = {
+            "ACTIVE": "🟢",
+            "VIOLATED": "🔴",
+            "REMEDIATED": "🟡",
+            "EXPIRED": "⚪",
+            "REVOKED": "⛔"
+        }
+
+        output = f"""# {status_emoji.get(exception.status.value, '•')} Exception Details: {exception.exception_code}
+
+**Status:** {exception.status.value}
+**User:** {exception.user_name}
+**Risk Score:** {exception.risk_score:.1f}/100
+
+## Conflict Summary
+
+• **Total Conflicts:** {exception.conflict_count}
+• **Critical Conflicts:** {exception.critical_conflicts}
+• **Approved Date:** {exception.approved_date.strftime('%Y-%m-%d')}
+• **Approved By:** {exception.approved_by}"""
+
+        if exception.approval_authority:
+            output += f" ({exception.approval_authority})"
+
+        if exception.expires_at:
+            days_until_expiry = (exception.expires_at - datetime.utcnow()).days
+            if days_until_expiry > 0:
+                output += f"\n• **Expires In:** {days_until_expiry} days ({exception.expires_at.strftime('%Y-%m-%d')})"
+            else:
+                output += f"\n• **Status:** ⚠️ EXPIRED on {exception.expires_at.strftime('%Y-%m-%d')}"
+
+        output += f"\n\n## Approved Role Combination ({len(exception.role_names)})\n\n"
+        for i, role in enumerate(exception.role_names, 1):
+            output += f"{i}. {role}\n"
+
+        output += f"\n## Business Justification\n\n{exception.business_justification}\n"
+
+        # Controls section
+        if controls:
+            output += f"\n## Compensating Controls ({len(controls)})\n\n"
+            total_cost = 0
+            total_prevented = 0
+            total_occurred = 0
+
+            for i, control in enumerate(controls, 1):
+                output += f"**{i}. Control**\n"
+                output += f"   • Status: {control.implementation_status.value}\n"
+                if control.risk_reduction_percentage:
+                    output += f"   • Risk Reduction: {control.risk_reduction_percentage}%\n"
+                if control.estimated_annual_cost:
+                    output += f"   • Estimated Cost: ${control.estimated_annual_cost:,.0f}/year\n"
+                    total_cost += control.estimated_annual_cost
+                if control.actual_annual_cost:
+                    output += f"   • Actual Cost: ${control.actual_annual_cost:,.0f}/year\n"
+
+                # Effectiveness
+                prevented = control.violations_prevented or 0
+                occurred = control.violations_occurred or 0
+                total_prevented += prevented
+                total_occurred += occurred
+
+                if prevented + occurred > 0:
+                    effectiveness = (prevented / (prevented + occurred)) * 100
+                    output += f"   • Effectiveness: {effectiveness:.1f}% ({prevented} prevented, {occurred} occurred)\n"
+
+                output += f"\n"
+
+            if total_cost > 0:
+                output += f"**Total Annual Cost:** ${total_cost:,.0f}\n"
+
+        else:
+            output += f"\n## Compensating Controls\n\n⚠️ No controls recorded\n"
+
+        # Violations section
+        if violations:
+            output += f"\n## Violations ({len(violations)})\n\n"
+            for i, violation in enumerate(violations, 1):
+                severity_emoji = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🔵"}
+                output += f"{severity_emoji.get(violation.severity, '•')} **{violation.violation_type}** ({violation.severity})\n"
+                output += f"   • Date: {violation.detected_at.strftime('%Y-%m-%d %H:%M')}\n"
+                output += f"   • Description: {violation.description}\n"
+                if violation.failure_reason:
+                    output += f"   • Failure Reason: {violation.failure_reason}\n"
+                output += f"   • Remediation: {violation.remediation_status.value}\n"
+                output += f"\n"
+        else:
+            output += f"\n## Violations\n\n✅ No violations recorded\n"
+
+        # Reviews section
+        if reviews:
+            output += f"\n## Review History ({len(reviews)})\n\n"
+            for i, review in enumerate(reviews, 1):
+                outcome_emoji = {
+                    "APPROVED_CONTINUE": "✅",
+                    "APPROVED_MODIFY": "🔄",
+                    "REVOKED": "⛔",
+                    "ESCALATED": "⬆️"
+                }
+                output += f"{outcome_emoji.get(review.outcome.value, '•')} **Review #{i}**\n"
+                output += f"   • Date: {review.review_date.strftime('%Y-%m-%d')}\n"
+                output += f"   • Reviewer: {review.reviewer_name}\n"
+                output += f"   • Outcome: {review.outcome.value}\n"
+                if review.findings:
+                    output += f"   • Findings: {review.findings}\n"
+                output += f"\n"
+
+        # Next review
+        if exception.next_review_date:
+            days_until_review = (exception.next_review_date - datetime.utcnow()).days
+            if days_until_review > 0:
+                output += f"\n**Next Review:** {exception.next_review_date.strftime('%Y-%m-%d')} ({days_until_review} days)\n"
+            else:
+                output += f"\n⚠️ **Review Overdue:** {exception.next_review_date.strftime('%Y-%m-%d')}\n"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in get_exception_details_handler: {str(e)}", exc_info=True)
+        return f"❌ Error getting exception details: {str(e)}"
+
+
+async def list_approved_exceptions_handler(
+    status: str = None,
+    user_identifier: str = None,
+    limit: int = 10,
+    offset: int = 0
+) -> str:
+    """
+    List approved exceptions with filters
+
+    Returns:
+        Paginated list of exceptions
+    """
+    try:
+        logger.info(f"Listing exceptions: status={status}, user={user_identifier}, limit={limit}")
+
+        from models.database_config import DatabaseConfig
+        from repositories.exception_repository import ExceptionRepository
+        from repositories.user_repository import UserRepository
+        from models.approved_exception import ExceptionStatus
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+
+        exception_repo = ExceptionRepository(session)
+
+        # Get user UUID if user_identifier provided
+        user_id = None
+        if user_identifier:
+            user_repo = UserRepository(session)
+            user = user_repo.get_user_by_email(user_identifier)
+            if not user:
+                user = user_repo.get_user_by_id(user_identifier)
+            if user:
+                user_id = user.id
+
+        # Convert status string to enum if provided
+        status_enum = None
+        if status:
+            status_enum = ExceptionStatus[status]
+
+        # Get exceptions
+        if user_id:
+            exceptions = exception_repo.get_by_user(user_id, status=status_enum)
+            exceptions = exceptions[offset:offset+limit]  # Apply pagination
+        else:
+            exceptions = exception_repo.list_all(status=status_enum, limit=limit, offset=offset)
+
+        # Get total counts
+        counts = exception_repo.count_by_status()
+        total = sum(counts.values())
+
+        # Format response
+        output = f"📋 **Approved SOD Exceptions**\n\n"
+        output += f"**Total:** {total} exceptions\n"
+
+        if counts:
+            output += f"**By Status:**\n"
+            for st, count in sorted(counts.items()):
+                status_emoji = {
+                    "ACTIVE": "🟢",
+                    "VIOLATED": "🔴",
+                    "REMEDIATED": "🟡",
+                    "EXPIRED": "⚪",
+                    "REVOKED": "⛔"
+                }
+                output += f"  • {status_emoji.get(st, '•')} {st}: {count}\n"
+
+        output += f"\n---\n\n"
+
+        if not exceptions:
+            filter_desc = []
+            if status:
+                filter_desc.append(f"status={status}")
+            if user_identifier:
+                filter_desc.append(f"user={user_identifier}")
+
+            output += f"No exceptions found"
+            if filter_desc:
+                output += f" with filters: {', '.join(filter_desc)}"
+            return output
+
+        output += f"**Showing {len(exceptions)} result(s)** (offset {offset})\n\n"
+
+        for i, exception in enumerate(exceptions, offset + 1):
+            status_emoji = {
+                "ACTIVE": "🟢",
+                "VIOLATED": "🔴",
+                "REMEDIATED": "🟡",
+                "EXPIRED": "⚪",
+                "REVOKED": "⛔"
+            }
+
+            output += f"{status_emoji.get(exception.status.value, '•')} **{i}. {exception.exception_code}**\n"
+            output += f"   • User: {exception.user_name}\n"
+            if exception.job_title:
+                output += f"   • Job Title: {exception.job_title}\n"
+            output += f"   • Status: {exception.status.value}\n"
+            output += f"   • Conflicts: {exception.conflict_count} ({exception.critical_conflicts} critical)\n"
+            output += f"   • Risk Score: {exception.risk_score:.1f}/100\n"
+            output += f"   • Roles: {len(exception.role_names)}\n"
+            output += f"   • Approved: {exception.approved_date.strftime('%Y-%m-%d')}\n"
+
+            # Get control count
+            controls = exception_repo.get_exception_controls(exception.exception_id)
+            if controls:
+                output += f"   • Controls: {len(controls)}\n"
+
+            output += f"\n"
+
+        if offset + limit < total:
+            output += f"_Use offset={offset + limit} to see more results_\n"
+
+        output += f"\n💡 Use `get_exception_details('<code>')` for full details of any exception.\n"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in list_approved_exceptions_handler: {str(e)}", exc_info=True)
+        return f"❌ Error listing exceptions: {str(e)}"
+
+
+async def record_exception_violation_handler(
+    exception_code: str,
+    violation_type: str,
+    severity: str,
+    description: str,
+    failed_control_name: str,
+    failure_reason: str = None,
+    detected_by: str = "Automated Monitoring",
+    detection_method: str = None
+) -> str:
+    """
+    Record a violation of an approved exception
+
+    Returns:
+        Confirmation of violation recording and status update
+    """
+    try:
+        logger.info(f"Recording violation for exception: {exception_code}")
+
+        from models.database_config import DatabaseConfig
+        from repositories.exception_repository import ExceptionRepository
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+
+        exception_repo = ExceptionRepository(session)
+
+        # Get exception
+        exception = exception_repo.get_by_code(exception_code)
+        if not exception:
+            return f"❌ Exception not found: {exception_code}\n\nUse `list_approved_exceptions()` to see available exceptions."
+
+        # Find the control that failed
+        controls = exception_repo.get_exception_controls(exception.exception_id)
+        failed_control_id = None
+        for control in controls:
+            # Match by control name (in MVP, we don't have control names stored directly)
+            # This would be improved in production with proper control references
+            failed_control_id = control.exception_control_id
+            break
+
+        # Record violation
+        violation = exception_repo.record_violation(
+            exception_id=exception.exception_id,
+            violation_type=violation_type,
+            severity=severity,
+            description=description,
+            failed_control_id=failed_control_id,
+            failure_reason=failure_reason,
+            detected_by=detected_by,
+            detection_method=detection_method
+        )
+
+        session.commit()
+
+        # Format response
+        severity_emoji = {
+            "CRITICAL": "🔴",
+            "HIGH": "🟠",
+            "MEDIUM": "🟡",
+            "LOW": "🔵"
+        }
+
+        output = f"""{severity_emoji.get(severity, '⚠️')} **Exception Violation Recorded**
+
+**Exception:** {exception.exception_code}
+**User:** {exception.user_name}
+**Violation Type:** {violation_type}
+**Severity:** {severity}
+
+**What Happened:**
+{description}
+
+**Failed Control:** {failed_control_name}
+"""
+
+        if failure_reason:
+            output += f"**Why It Failed:** {failure_reason}\n"
+
+        output += f"\n**Detection:**\n"
+        output += f"• Detected By: {detected_by}\n"
+        if detection_method:
+            output += f"• Detection Method: {detection_method}\n"
+        output += f"• Detected At: {violation.detected_at.strftime('%Y-%m-%d %H:%M')}\n"
+
+        output += f"\n**Exception Status Updated:** {exception.status.value}\n"
+
+        output += f"\n⚠️ **Action Required:**\n"
+        output += f"• Investigate root cause immediately\n"
+        output += f"• Review all controls for this exception\n"
+        output += f"• Consider temporary revocation if pattern continues\n"
+        output += f"• Document remediation actions\n"
+
+        output += f"\n💡 Use `get_exception_details('{exception.exception_code}')` to see full violation history.\n"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in record_exception_violation_handler: {str(e)}", exc_info=True)
+        return f"❌ Error recording violation: {str(e)}"
+
+
+async def get_exception_effectiveness_stats_handler() -> str:
+    """
+    Get exception effectiveness dashboard statistics
+
+    Returns:
+        Comprehensive dashboard with costs, effectiveness, and ROI
+    """
+    try:
+        logger.info("Getting exception effectiveness statistics")
+
+        from models.database_config import DatabaseConfig
+        from repositories.exception_repository import ExceptionRepository
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+
+        exception_repo = ExceptionRepository(session)
+
+        # Get statistics
+        stats = exception_repo.get_effectiveness_stats()
+
+        # Format response
+        output = f"""📊 **EXCEPTION EFFECTIVENESS DASHBOARD**
+
+## Overview
+
+• **Total Exceptions:** {stats['total_exceptions']}
+• **Total Annual Cost:** ${stats['total_annual_cost']:,.0f}
+• **Total Violations:** {stats['total_violations']}
+
+## Status Breakdown
+
+"""
+
+        status_order = ['ACTIVE', 'VIOLATED', 'REMEDIATED', 'EXPIRED', 'REVOKED']
+        status_emoji = {
+            "ACTIVE": "✅",
+            "VIOLATED": "❌",
+            "REMEDIATED": "🔄",
+            "EXPIRED": "⏱️",
+            "REVOKED": "⛔"
+        }
+
+        for status in status_order:
+            count = stats['by_status'].get(status, 0)
+            if stats['total_exceptions'] > 0:
+                pct = (count / stats['total_exceptions']) * 100
+                output += f"{status_emoji.get(status, '•')} **{status}:** {count} ({pct:.1f}%)\n"
+
+        # Get exceptions needing review
+        needs_review = exception_repo.get_exceptions_needing_review()
+        if needs_review:
+            output += f"\n## ⚠️ Exceptions Needing Review ({len(needs_review)})\n\n"
+            for exception in needs_review[:5]:  # Show top 5
+                days_overdue = (datetime.utcnow() - exception.next_review_date).days if exception.next_review_date else 0
+                output += f"• {exception.exception_code} ({exception.user_name})"
+                if days_overdue > 0:
+                    output += f" - {days_overdue} days overdue"
+                output += f"\n"
+
+            if len(needs_review) > 5:
+                output += f"_...and {len(needs_review) - 5} more_\n"
+
+        output += f"\n## Control Effectiveness\n\n"
+
+        # Calculate overall effectiveness
+        total_prevented = 0
+        total_occurred = 0
+
+        all_exceptions = exception_repo.list_all(limit=1000)  # Get all for analysis
+        for exception in all_exceptions:
+            controls = exception_repo.get_exception_controls(exception.exception_id)
+            for control in controls:
+                total_prevented += control.violations_prevented or 0
+                total_occurred += control.violations_occurred or 0
+
+        if total_prevented + total_occurred > 0:
+            overall_effectiveness = (total_prevented / (total_prevented + total_occurred)) * 100
+            output += f"• **Overall Effectiveness:** {overall_effectiveness:.1f}%\n"
+            output += f"• **Violations Prevented:** {total_prevented}\n"
+            output += f"• **Violations Occurred:** {total_occurred}\n"
+        else:
+            output += f"_No effectiveness data available yet_\n"
+
+        output += f"\n## Recommendations\n\n"
+
+        violated_count = stats['by_status'].get('VIOLATED', 0)
+        if violated_count > 0:
+            output += f"⚠️ **{violated_count} exception(s) currently violated** - immediate review required\n"
+
+        if len(needs_review) > 0:
+            output += f"⚠️ **{len(needs_review)} exception(s) overdue for review** - schedule reviews promptly\n"
+
+        if stats['total_violations'] > stats['total_exceptions'] * 0.1:  # More than 10% violation rate
+            output += f"⚠️ **High violation rate detected** - consider strengthening controls or revoking problematic exceptions\n"
+
+        if stats['total_annual_cost'] > 1000000:  # Over $1M
+            output += f"💡 Consider cost optimization - review high-cost exceptions for potential consolidation\n"
+
+        if violated_count == 0 and len(needs_review) == 0 and stats['total_violations'] == 0:
+            output += f"✅ **All exceptions performing well** - continue monitoring\n"
+
+        output += f"\n---\n\n"
+        output += f"💡 Use `list_approved_exceptions(status='VIOLATED')` to see problematic exceptions\n"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in get_exception_effectiveness_stats_handler: {str(e)}", exc_info=True)
+        return f"❌ Error getting effectiveness stats: {str(e)}"
+
+
+# ============================================================================
 # TOOL REGISTRY
 # ============================================================================
 
@@ -2159,7 +3169,14 @@ TOOL_HANDLERS = {
     "query_knowledge_base": query_knowledge_base_handler,
     "recommend_roles_for_job_title": recommend_roles_for_job_title_handler,
     "analyze_role_permissions": analyze_role_permissions_handler,
-    "get_role_conflicts": get_role_conflicts_handler
+    "get_role_conflicts": get_role_conflicts_handler,
+    # Exception Management Tools
+    "record_exception_approval": record_exception_approval_handler,
+    "find_similar_exceptions": find_similar_exceptions_handler,
+    "get_exception_details": get_exception_details_handler,
+    "list_approved_exceptions": list_approved_exceptions_handler,
+    "record_exception_violation": record_exception_violation_handler,
+    "get_exception_effectiveness_stats": get_exception_effectiveness_stats_handler
 }
 
 

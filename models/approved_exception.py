@@ -81,7 +81,7 @@ class ApprovedExceptionModel(Base):
     department = Column(String(255))
 
     # Role Combination (stored as arrays for easy matching)
-    role_ids = Column(ARRAY(Integer), nullable=False)
+    role_ids = Column(ARRAY(UUID), nullable=False)
     role_names = Column(ARRAY(String), nullable=False)
 
     # Violation Details
