@@ -236,7 +236,16 @@ class DataCollectionAgent:
                 compliance_scan.error_message = str(analysis_result.get('error'))
                 self.session.commit()
 
-            # Step 5: Mark sync as successful
+            # Step 5: Enrich knowledge base with latest data
+            logger.info("Enriching knowledge base with latest compliance data...")
+            try:
+                self._enrich_knowledge_base()
+                logger.info("✅ Knowledge base enrichment completed")
+            except Exception as kb_error:
+                logger.warning(f"⚠️  Knowledge base enrichment failed (non-critical): {kb_error}")
+                # Don't fail the sync if KB enrichment fails
+
+            # Step 6: Mark sync as successful
             end_time = datetime.utcnow()
             duration = (end_time - start_time).total_seconds()
 
@@ -375,6 +384,51 @@ class DataCollectionAgent:
             ],
             'statistics_7d': stats
         }
+
+    def _enrich_knowledge_base(self):
+        """
+        Enrich knowledge base with latest compliance data
+
+        Calls the enrich_knowledge_base.py script to:
+        - Update SOD rule embeddings
+        - Update compensating control embeddings
+        - Update job role mapping embeddings
+        - Update permission category embeddings
+        - Update conflict analysis embeddings
+        """
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        # Get path to enrichment script
+        script_path = Path(__file__).parent.parent / 'scripts' / 'enrich_knowledge_base.py'
+
+        if not script_path.exists():
+            logger.warning(f"Enrichment script not found: {script_path}")
+            return
+
+        # Run enrichment script
+        try:
+            result = subprocess.run(
+                [sys.executable, str(script_path)],
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minute timeout
+            )
+
+            if result.returncode == 0:
+                logger.info("Knowledge base enrichment output:")
+                for line in result.stdout.strip().split('\n'):
+                    if line:
+                        logger.info(f"  {line}")
+            else:
+                logger.error(f"Enrichment script failed with return code {result.returncode}")
+                logger.error(f"Error output: {result.stderr}")
+                raise Exception(f"Enrichment failed: {result.stderr}")
+
+        except subprocess.TimeoutExpired:
+            logger.error("Enrichment script timed out (>5 minutes)")
+            raise Exception("Enrichment timed out")
 
     def _send_alert(self, message: str):
         """
