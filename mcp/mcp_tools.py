@@ -10,6 +10,11 @@ import os
 from datetime import datetime, timedelta
 from functools import lru_cache
 from sqlalchemy import text
+try:
+    from dateutil.relativedelta import relativedelta
+except ImportError:
+    # Fallback if dateutil not installed
+    relativedelta = None
 from .orchestrator import ComplianceOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -694,6 +699,93 @@ TOOL_SCHEMAS = {
         "inputSchema": {
             "type": "object",
             "properties": {},
+            "required": []
+        }
+    },
+
+    "detect_exception_violations": {
+        "description": "Automatically detect violations of approved exceptions by checking if users with exceptions have new SOD conflicts or are bypassing compensating controls. Run this periodically (daily/weekly) to monitor exception compliance.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "check_all": {
+                    "type": "boolean",
+                    "description": "Check all active exceptions (default) or only specific users",
+                    "default": True
+                },
+                "exception_codes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of specific exception codes to check"
+                },
+                "auto_record": {
+                    "type": "boolean",
+                    "description": "Automatically record detected violations (default: false, returns report only)",
+                    "default": False
+                }
+            },
+            "required": []
+        }
+    },
+
+    "conduct_exception_review": {
+        "description": "Conduct a periodic review of an approved exception. Records review findings, outcome (continue/modify/revoke), and updates next review date. Use this when completing scheduled quarterly/annual exception reviews.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "exception_code": {
+                    "type": "string",
+                    "description": "Exception code to review (e.g., 'EXC-2026-001')"
+                },
+                "reviewer_name": {
+                    "type": "string",
+                    "description": "Name of person conducting review"
+                },
+                "outcome": {
+                    "type": "string",
+                    "enum": ["APPROVED_CONTINUE", "APPROVED_MODIFY", "REVOKED", "ESCALATED"],
+                    "description": "Review outcome"
+                },
+                "findings": {
+                    "type": "string",
+                    "description": "Review findings and observations"
+                },
+                "recommendations": {
+                    "type": "string",
+                    "description": "Recommendations for improvement or changes"
+                },
+                "control_modifications": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "control_name": {"type": "string"},
+                            "modification": {"type": "string"}
+                        }
+                    },
+                    "description": "List of control modifications if outcome is APPROVED_MODIFY"
+                }
+            },
+            "required": ["exception_code", "reviewer_name", "outcome"]
+        }
+    },
+
+    "get_exceptions_for_review": {
+        "description": "Get list of exceptions that are due or overdue for periodic review. Use this to identify which exceptions need review attention and schedule review sessions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "include_upcoming": {
+                    "type": "boolean",
+                    "description": "Include exceptions with reviews coming up in next 30 days",
+                    "default": True
+                },
+                "days_ahead": {
+                    "type": "integer",
+                    "description": "How many days ahead to look for upcoming reviews",
+                    "default": 30
+                }
+            },
             "required": []
         }
     }
@@ -2982,7 +3074,14 @@ async def record_exception_violation_handler(
             detection_method=detection_method
         )
 
+        # Check if violation was recorded successfully
+        if not violation:
+            return f"❌ Failed to record violation for {exception_code}\n\nCheck logs for details. The exception may have integrity constraints or the session failed to commit."
+
         session.commit()
+
+        # Refresh exception to get updated status
+        session.refresh(exception)
 
         # Format response
         severity_emoji = {
@@ -3144,6 +3243,433 @@ async def get_exception_effectiveness_stats_handler() -> str:
 
 
 # ============================================================================
+# PHASE 3: VIOLATION DETECTION AND REVIEW MANAGEMENT
+# ============================================================================
+
+async def detect_exception_violations_handler(
+    check_all: bool = True,
+    exception_codes: List[str] = None,
+    auto_record: bool = False
+) -> str:
+    """
+    Automatically detect violations of approved exceptions
+
+    Checks:
+    1. Users with exceptions still have the approved role combination
+    2. No new critical conflicts beyond what was approved
+    3. Controls are still in place and effective
+
+    Returns:
+        Report of detected violations
+    """
+    try:
+        logger.info(f"Detecting exception violations: check_all={check_all}, auto_record={auto_record}")
+
+        from models.database_config import DatabaseConfig
+        from repositories.exception_repository import ExceptionRepository
+        from repositories.user_repository import UserRepository
+        from models.approved_exception import ExceptionStatus
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+
+        exception_repo = ExceptionRepository(session)
+        user_repo = UserRepository(session)
+
+        # Get exceptions to check
+        if exception_codes:
+            exceptions = [exception_repo.get_by_code(code) for code in exception_codes]
+            exceptions = [e for e in exceptions if e]  # Filter out None
+        elif check_all:
+            exceptions = exception_repo.list_all(status=ExceptionStatus.ACTIVE, limit=1000)
+        else:
+            return "❌ Must specify either check_all=true or provide exception_codes"
+
+        if not exceptions:
+            return "✅ No active exceptions to check"
+
+        # Analyze each exception for violations
+        violations_detected = []
+        clean_exceptions = []
+
+        for exception in exceptions:
+            # Get current user info
+            user = user_repo.get_user_by_uuid(str(exception.user_id))
+            if not user:
+                violations_detected.append({
+                    'exception': exception,
+                    'violation_type': 'User Not Found',
+                    'severity': 'CRITICAL',
+                    'description': f'User {exception.user_name} no longer exists in system'
+                })
+                continue
+
+            # Get user's current roles
+            current_roles = user_repo.get_user_roles(str(user.id))
+            current_role_ids = [role.id for role in current_roles]
+            current_role_ids_set = set(current_role_ids)
+            approved_role_ids_set = set(exception.role_ids)
+
+            # Check 1: User still has the approved role combination
+            if not approved_role_ids_set.issubset(current_role_ids_set):
+                missing_roles = approved_role_ids_set - current_role_ids_set
+                violations_detected.append({
+                    'exception': exception,
+                    'violation_type': 'Unapproved Role Change',
+                    'severity': 'HIGH',
+                    'description': f'User no longer has all approved roles. Missing {len(missing_roles)} role(s). Exception should be closed.'
+                })
+                continue
+
+            # Check 2: User hasn't gained additional high-risk roles
+            additional_roles = current_role_ids_set - approved_role_ids_set
+            if additional_roles:
+                violations_detected.append({
+                    'exception': exception,
+                    'violation_type': 'Unauthorized Role Addition',
+                    'severity': 'MEDIUM',
+                    'description': f'User gained {len(additional_roles)} additional role(s) beyond exception approval. May create new conflicts.'
+                })
+
+            # Check 3: Controls are still implemented
+            controls = exception_repo.get_exception_controls(exception.exception_id)
+            inactive_controls = [c for c in controls if c.implementation_status.value != 'ACTIVE']
+
+            if inactive_controls:
+                violations_detected.append({
+                    'exception': exception,
+                    'violation_type': 'Control Not Active',
+                    'severity': 'CRITICAL',
+                    'description': f'{len(inactive_controls)} compensating control(s) not in ACTIVE status'
+                })
+
+            # If no violations found, mark as clean
+            if not any(v['exception'].exception_id == exception.exception_id for v in violations_detected):
+                clean_exceptions.append(exception)
+
+        # Format output
+        output = f"""🔍 **Exception Violation Detection Report**
+
+**Scope:** {len(exceptions)} active exception(s) checked
+
+**Results:**
+• ✅ Clean: {len(clean_exceptions)}
+• ⚠️ Violations Detected: {len(violations_detected)}
+
+"""
+
+        if violations_detected:
+            output += f"## Violations Detected ({len(violations_detected)})\n\n"
+
+            for i, violation in enumerate(violations_detected, 1):
+                exc = violation['exception']
+                severity_emoji = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🔵"}
+
+                output += f"{severity_emoji.get(violation['severity'], '⚠️')} **{i}. {exc.exception_code}** - {violation['violation_type']}\n"
+                output += f"   • User: {exc.user_name}\n"
+                output += f"   • Severity: {violation['severity']}\n"
+                output += f"   • Issue: {violation['description']}\n"
+                output += f"\n"
+
+                # Auto-record if requested
+                if auto_record:
+                    recorded = exception_repo.record_violation(
+                        exception_id=exc.exception_id,
+                        violation_type=violation['violation_type'],
+                        severity=violation['severity'],
+                        description=violation['description'],
+                        detected_by="Automated Violation Detection",
+                        detection_method="Periodic exception compliance scan"
+                    )
+
+                    if recorded:
+                        output += f"   ✅ Violation auto-recorded\n\n"
+                        session.commit()
+                    else:
+                        output += f"   ❌ Failed to auto-record\n\n"
+
+            if not auto_record:
+                output += f"\n💡 **Tip:** Run with `auto_record=true` to automatically record these violations\n"
+
+        else:
+            output += f"✅ **All exceptions compliant** - No violations detected\n"
+
+        if clean_exceptions:
+            output += f"\n## Clean Exceptions ({len(clean_exceptions)})\n\n"
+            for exc in clean_exceptions[:5]:  # Show first 5
+                output += f"✅ {exc.exception_code} - {exc.user_name}\n"
+
+            if len(clean_exceptions) > 5:
+                output += f"_...and {len(clean_exceptions) - 5} more_\n"
+
+        output += f"\n---\n\n"
+        output += f"**Checks Performed:**\n"
+        output += f"1. ✓ User still has approved role combination\n"
+        output += f"2. ✓ No unauthorized additional roles\n"
+        output += f"3. ✓ All compensating controls still active\n"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in detect_exception_violations_handler: {str(e)}", exc_info=True)
+        return f"❌ Error detecting violations: {str(e)}"
+
+
+async def conduct_exception_review_handler(
+    exception_code: str,
+    reviewer_name: str,
+    outcome: str,
+    findings: str = None,
+    recommendations: str = None,
+    control_modifications: List[Dict[str, str]] = None
+) -> str:
+    """
+    Conduct a periodic review of an approved exception
+
+    Returns:
+        Review confirmation and next steps
+    """
+    try:
+        logger.info(f"Conducting review for exception: {exception_code}")
+
+        from models.database_config import DatabaseConfig
+        from repositories.exception_repository import ExceptionRepository
+        from models.approved_exception import ReviewOutcome, ExceptionStatus
+        from dateutil.relativedelta import relativedelta
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+
+        exception_repo = ExceptionRepository(session)
+
+        # Get exception
+        exception = exception_repo.get_by_code(exception_code)
+        if not exception:
+            return f"❌ Exception not found: {exception_code}"
+
+        # Convert outcome string to enum
+        outcome_enum = ReviewOutcome[outcome]
+
+        # Create review record
+        review = exception_repo.create_review(
+            exception_id=exception.exception_id,
+            reviewer_name=reviewer_name,
+            outcome=outcome_enum,
+            findings=findings,
+            recommendations=recommendations,
+            control_modifications=control_modifications
+        )
+
+        # Update exception based on outcome
+        if outcome_enum == ReviewOutcome.REVOKED:
+            exception_repo.update_status(
+                exception.exception_id,
+                ExceptionStatus.REVOKED,
+                f"Revoked during {datetime.utcnow().strftime('%Y-%m-%d')} review"
+            )
+            next_review_date = None
+
+        elif outcome_enum == ReviewOutcome.APPROVED_CONTINUE or outcome_enum == ReviewOutcome.APPROVED_MODIFY:
+            # Schedule next review based on frequency
+            frequency_map = {
+                "Monthly": relativedelta(months=1),
+                "Quarterly": relativedelta(months=3),
+                "Annually": relativedelta(years=1)
+            }
+
+            delta = frequency_map.get(exception.review_frequency, relativedelta(months=3))
+            next_review_date = datetime.utcnow() + delta
+            exception.next_review_date = next_review_date
+            exception.last_review_date = datetime.utcnow().date()
+
+        elif outcome_enum == ReviewOutcome.ESCALATED:
+            # Keep current schedule, add escalation note
+            next_review_date = exception.next_review_date
+
+        session.commit()
+
+        # Format response
+        outcome_emoji = {
+            "APPROVED_CONTINUE": "✅",
+            "APPROVED_MODIFY": "🔄",
+            "REVOKED": "⛔",
+            "ESCALATED": "⬆️"
+        }
+
+        output = f"""{outcome_emoji.get(outcome, '📋')} **Exception Review Completed**
+
+**Exception:** {exception.exception_code}
+**User:** {exception.user_name}
+**Reviewer:** {reviewer_name}
+**Review Date:** {datetime.utcnow().strftime('%Y-%m-%d')}
+**Outcome:** {outcome}
+
+"""
+
+        if findings:
+            output += f"**Findings:**\n{findings}\n\n"
+
+        if recommendations:
+            output += f"**Recommendations:**\n{recommendations}\n\n"
+
+        if control_modifications:
+            output += f"**Control Modifications ({len(control_modifications)}):**\n"
+            for mod in control_modifications:
+                output += f"• {mod.get('control_name', 'Unknown')}: {mod.get('modification', 'No details')}\n"
+            output += f"\n"
+
+        # Next steps based on outcome
+        if outcome_enum == ReviewOutcome.REVOKED:
+            output += f"**Status:** Exception REVOKED\n"
+            output += f"\n⚠️ **Action Required:**\n"
+            output += f"• Remove conflicting roles from user immediately\n"
+            output += f"• Notify user and manager\n"
+            output += f"• Update access control systems\n"
+            output += f"• Document reason for revocation\n"
+
+        elif outcome_enum == ReviewOutcome.APPROVED_CONTINUE:
+            output += f"**Next Review:** {next_review_date.strftime('%Y-%m-%d')} ({exception.review_frequency})\n"
+            output += f"\n✅ **Status:** Exception continues with current controls\n"
+
+        elif outcome_enum == ReviewOutcome.APPROVED_MODIFY:
+            output += f"**Next Review:** {next_review_date.strftime('%Y-%m-%d')} ({exception.review_frequency})\n"
+            output += f"\n🔄 **Action Required:**\n"
+            output += f"• Implement control modifications as specified\n"
+            output += f"• Update control status once implemented\n"
+            output += f"• Notify affected stakeholders\n"
+
+        elif outcome_enum == ReviewOutcome.ESCALATED:
+            output += f"\n⬆️ **Escalated for Higher Authority Review**\n"
+            output += f"• Route to CFO/Audit Committee\n"
+            output += f"• Provide full context and recommendations\n"
+            output += f"• Await decision before next scheduled review\n"
+
+        output += f"\n💡 Use `get_exception_details('{exception_code}')` to see full review history.\n"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in conduct_exception_review_handler: {str(e)}", exc_info=True)
+        return f"❌ Error conducting review: {str(e)}"
+
+
+async def get_exceptions_for_review_handler(
+    include_upcoming: bool = True,
+    days_ahead: int = 30
+) -> str:
+    """
+    Get list of exceptions due or overdue for review
+
+    Returns:
+        List of exceptions needing review attention
+    """
+    try:
+        logger.info(f"Getting exceptions for review: upcoming={include_upcoming}, days={days_ahead}")
+
+        from models.database_config import DatabaseConfig
+        from repositories.exception_repository import ExceptionRepository
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+
+        exception_repo = ExceptionRepository(session)
+
+        # Get exceptions needing review
+        exceptions = exception_repo.get_exceptions_needing_review()
+
+        # Separate into overdue and upcoming
+        overdue = []
+        upcoming = []
+        today = datetime.utcnow().date()
+        future_date = today + timedelta(days=days_ahead)
+
+        for exception in exceptions:
+            if not exception.next_review_date:
+                continue
+
+            if exception.next_review_date < today:
+                days_overdue = (today - exception.next_review_date).days
+                overdue.append((exception, days_overdue))
+            elif include_upcoming and exception.next_review_date <= future_date:
+                days_until = (exception.next_review_date - today).days
+                upcoming.append((exception, days_until))
+
+        # Format output
+        output = f"""📅 **Exceptions Requiring Review**
+
+**Summary:**
+• 🔴 Overdue: {len(overdue)}
+• 🟡 Upcoming ({days_ahead} days): {len(upcoming)}
+
+"""
+
+        if overdue:
+            output += f"## 🔴 Overdue Reviews ({len(overdue)})\n\n"
+
+            # Sort by most overdue first
+            overdue.sort(key=lambda x: x[1], reverse=True)
+
+            for exception, days_overdue in overdue:
+                output += f"**{exception.exception_code}** - {exception.user_name}\n"
+                output += f"   • Due Date: {exception.next_review_date}\n"
+                output += f"   • **{days_overdue} days overdue** ⚠️\n"
+                output += f"   • Frequency: {exception.review_frequency}\n"
+                output += f"   • Risk Score: {exception.risk_score:.1f}/100\n"
+
+                # Get control count
+                controls = exception_repo.get_exception_controls(exception.exception_id)
+                output += f"   • Controls: {len(controls)}\n"
+
+                # Check for violations
+                violations = exception_repo.get_exception_violations(exception.exception_id)
+                if violations:
+                    output += f"   • ⚠️ {len(violations)} violation(s) recorded\n"
+
+                output += f"\n"
+
+            output += f"⚠️ **Action Required:** Schedule reviews immediately for overdue exceptions\n\n"
+
+        if upcoming:
+            output += f"## 🟡 Upcoming Reviews (Next {days_ahead} Days)\n\n"
+
+            # Sort by soonest first
+            upcoming.sort(key=lambda x: x[1])
+
+            for exception, days_until in upcoming[:10]:  # Show first 10
+                output += f"**{exception.exception_code}** - {exception.user_name}\n"
+                output += f"   • Due Date: {exception.next_review_date}\n"
+                output += f"   • In {days_until} day(s)\n"
+                output += f"   • Frequency: {exception.review_frequency}\n"
+                output += f"\n"
+
+            if len(upcoming) > 10:
+                output += f"_...and {len(upcoming) - 10} more_\n\n"
+
+            output += f"💡 **Tip:** Schedule review sessions for upcoming exceptions\n\n"
+
+        if not overdue and not upcoming:
+            output += f"✅ **All reviews current** - No overdue or upcoming reviews in the next {days_ahead} days\n\n"
+
+        output += f"---\n\n"
+        output += f"**To conduct a review:**\n"
+        output += f"```\n"
+        output += f"conduct_exception_review(\n"
+        output += f"  exception_code='EXC-2026-001',\n"
+        output += f"  reviewer_name='Your Name',\n"
+        output += f"  outcome='APPROVED_CONTINUE',  # or APPROVED_MODIFY, REVOKED, ESCALATED\n"
+        output += f"  findings='Review findings...',\n"
+        output += f"  recommendations='Recommendations...'\n"
+        output += f")\n"
+        output += f"```\n"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in get_exceptions_for_review_handler: {str(e)}", exc_info=True)
+        return f"❌ Error getting exceptions for review: {str(e)}"
+
+
+# ============================================================================
 # TOOL REGISTRY
 # ============================================================================
 
@@ -3170,13 +3696,17 @@ TOOL_HANDLERS = {
     "recommend_roles_for_job_title": recommend_roles_for_job_title_handler,
     "analyze_role_permissions": analyze_role_permissions_handler,
     "get_role_conflicts": get_role_conflicts_handler,
-    # Exception Management Tools
+    # Exception Management Tools (Phase 2)
     "record_exception_approval": record_exception_approval_handler,
     "find_similar_exceptions": find_similar_exceptions_handler,
     "get_exception_details": get_exception_details_handler,
     "list_approved_exceptions": list_approved_exceptions_handler,
     "record_exception_violation": record_exception_violation_handler,
-    "get_exception_effectiveness_stats": get_exception_effectiveness_stats_handler
+    "get_exception_effectiveness_stats": get_exception_effectiveness_stats_handler,
+    # Exception Management Tools (Phase 3)
+    "detect_exception_violations": detect_exception_violations_handler,
+    "conduct_exception_review": conduct_exception_review_handler,
+    "get_exceptions_for_review": get_exceptions_for_review_handler
 }
 
 
