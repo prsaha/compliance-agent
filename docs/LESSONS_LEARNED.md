@@ -3929,6 +3929,280 @@ Traceback (most recent call last):
 ---
 
 ### Architecture Decision: Agent Response with Attachments Pattern
+### Issue #18: MCP Server Dependency Conflicts and Response Style Improvements
+
+**Severity:** 🟡 MEDIUM - Blocked server startup, required dependency resolution
+
+#### What Happened
+
+When attempting to restart the MCP server to apply new response style guidelines, the server failed to start due to multiple dependency conflicts:
+
+```
+ERROR: Cannot install langchain==0.3.12 and pydantic==2.5.0 because these package versions have conflicting dependencies.
+
+The conflict is caused by:
+    The user requested pydantic==2.5.0
+    langchain 0.3.12 depends on pydantic<3.0.0 and >=2.7.4
+```
+
+**Location:** `requirements.txt` with pinned dependency versions
+
+**User Experience:**
+1. User requested "more tight" responses (not verbose with 6+ bullet points)
+2. Updated tool descriptions and created RESPONSE_STYLE_GUIDE.md
+3. Attempted server restart to apply changes
+4. Server failed with `ModuleNotFoundError: No module named 'fastapi'`
+5. Multiple cascading dependency conflicts emerged during installation
+
+#### Root Cause
+
+**Primary Causes:**
+
+1. **Over-constrained Dependencies:** Using exact version pins (`==`) instead of compatible ranges (`>=`)
+   - `pydantic==2.5.0` conflicted with `langchain 0.3.12` (requires >=2.7.4)
+   - `anthropic==0.42.0` conflicted with `langchain-anthropic 0.3.7` (requires >=0.45.0)
+   - `langchain-core==0.3.26` conflicted with `langchain-anthropic 0.3.7` (requires >=0.3.34)
+   - `pydantic-settings==2.1.0` conflicted with `langchain-community` (requires >=2.4.0)
+
+2. **Missing Dependencies:** `cryptography` package not in requirements.txt but required by `config_manager.py`
+
+3. **Outdated Package Version:** `sentence-transformers==2.2.2` incompatible with newer `huggingface-hub`
+   - Error: `ImportError: cannot import name 'cached_download' from 'huggingface_hub'`
+   - Function removed in newer huggingface-hub versions
+
+**Secondary Cause:**
+
+User feedback indicated MCP tool responses were too verbose, requiring style updates:
+- Responses had 30+ lines with extensive bullet-point lists
+- User wanted "tight" format: 10-15 lines maximum
+- Needed executive-friendly summaries with clear recommendations
+
+#### Solution Applied
+
+**1. Dependency Resolution:**
+
+```python
+# requirements.txt - BEFORE (Over-constrained)
+pydantic==2.5.0                    # ❌ Too old for langchain
+anthropic==0.42.0                  # ❌ Too old for langchain-anthropic
+langchain-core==0.3.26             # ❌ Too old for langchain-anthropic
+pydantic-settings==2.1.0           # ❌ Too old for langchain-community
+sentence-transformers==2.2.2       # ❌ Incompatible with modern huggingface-hub
+
+# requirements.txt - AFTER (Compatible ranges)
+pydantic>=2.7.4,<3.0.0            # ✅ Compatible with langchain
+anthropic>=0.45.0,<1.0.0          # ✅ Compatible with langchain-anthropic
+langchain-core>=0.3.34            # ✅ Compatible with langchain-anthropic
+pydantic-settings>=2.4.0,<3.0.0   # ✅ Compatible with langchain-community
+sentence-transformers>=2.3.0       # ✅ Compatible (upgraded to 5.1.2)
+cryptography>=46.0.0              # ✅ Added missing dependency
+```
+
+**2. Response Style Guidelines:**
+
+Created `mcp/RESPONSE_STYLE_GUIDE.md` with concise format:
+
+```markdown
+# Target Format (10-15 lines)
+
+❌ DENY REQUEST
+
+Conflicts: 31 SOD violations (29 CRITICAL)
+Key Issue: User can create AND approve own transactions
+Risk: 77.5/100
+
+Options:
+1. Deny (recommended) - $0, zero risk
+2. Split roles - $0, assign to 2 people
+3. Approve with controls - $100K/year
+
+Recommendation: Keep roles separate.
+```
+
+Updated tool descriptions in `mcp/mcp_tools.py`:
+```python
+"analyze_access_request": {
+    "description": "Analyze an access request for SOD conflicts using level-based analysis. Returns concise summary with: conflict count, severity breakdown, top 3-5 critical issues, and direct recommendation (approve/deny/review). Avoid verbose explanations or detailed bullet lists.",
+    # ...
+}
+```
+
+#### Verification Steps
+
+1. **Dependency Installation:**
+   ```bash
+   $ /path/to/venv/bin/pip install -r requirements.txt
+   Successfully installed cryptography-46.0.5
+   Successfully installed sentence-transformers-5.1.2
+   ```
+
+2. **Server Startup:**
+   ```bash
+   $ python3 -m mcp.mcp_server
+   2026-02-13 14:12:11 - INFO - ✅ Autonomous Collection Agent started successfully
+   2026-02-13 14:12:11 - INFO - ✅ Knowledge Base Agent initialized successfully
+   INFO: Uvicorn running on http://0.0.0.0:8080
+   ```
+
+3. **Tool Description Verification:**
+   ```bash
+   $ curl -X POST http://localhost:8080/mcp \
+       -H "Content-Type: application/json" \
+       -H "X-API-Key: dev-key-12345" \
+       -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+       | grep "concise summary"
+   
+   # Returns: "Returns concise summary with: conflict count, severity breakdown..."
+   ```
+
+#### Prevention Strategy
+
+**1. Dependency Management Best Practices:**
+
+```toml
+# Use pyproject.toml for better dependency management
+[project]
+dependencies = [
+    "pydantic>=2.7.4,<3.0.0",      # Use ranges, not exact pins
+    "anthropic>=0.45.0,<1.0.0",    # Allow minor version updates
+    "langchain>=0.3.12,<0.4.0",    # Pin major, allow minor
+]
+
+[project.optional-dependencies]
+dev = [
+    "pip-tools",                    # For dependency locking
+    "pipdeptree",                   # For conflict visualization
+]
+```
+
+**2. Dependency Conflict Detection:**
+
+```bash
+# Add to CI/CD pipeline
+#!/bin/bash
+# scripts/check_dependencies.sh
+
+echo "Checking for dependency conflicts..."
+pip-compile --dry-run requirements.txt 2>&1 | grep -i conflict
+
+if [ $? -eq 0 ]; then
+    echo "❌ Dependency conflicts detected!"
+    exit 1
+fi
+
+echo "✅ No dependency conflicts found"
+```
+
+**3. Dependency Update Process:**
+
+```bash
+# scripts/update_dependencies.sh
+#!/bin/bash
+
+# 1. Check current versions
+pip list --outdated
+
+# 2. Update specific package with constraints
+pip install --upgrade "package>=min_version,<max_version"
+
+# 3. Test installation in clean environment
+python -m venv /tmp/test_env
+/tmp/test_env/bin/pip install -r requirements.txt
+
+# 4. Run smoke tests
+python -m pytest tests/smoke/
+
+# 5. Update requirements.txt
+pip freeze > requirements.txt
+```
+
+**4. User Feedback Integration:**
+
+```markdown
+# Response Style Validation Checklist
+
+Before deploying tool changes:
+
+- [ ] Review tool descriptions for verbosity guidance
+- [ ] Test response format with real queries
+- [ ] Verify response length (target: 10-15 lines)
+- [ ] Check for verbose sections (6+ bullet points)
+- [ ] Ensure executive-friendly format
+- [ ] Document style guidelines in RESPONSE_STYLE_GUIDE.md
+```
+
+#### Lessons Learned
+
+**Critical Learning:** Exact version pins (`==`) create brittle dependency chains that break when any package updates.
+
+**Key Takeaways:**
+
+1. **Use Version Ranges:** Prefer `>=min,<max` over `==exact` for better compatibility
+2. **Document Missing Deps:** Run `pipdeptree` to identify undeclared dependencies
+3. **Test in Clean Environment:** Always verify installation works from scratch
+4. **Upgrade Together:** When upgrading one package, check transitive dependency requirements
+5. **User Feedback Loop:** Incorporate UX feedback immediately; response format affects usability
+6. **Response Style Matters:** Verbose responses reduce tool effectiveness in conversational UI
+
+**Dependency Resolution Pattern:**
+
+```python
+# When hitting dependency conflicts:
+
+1. Identify conflict:     pip install (read error message)
+2. Check requirements:    pip show <conflicting-package>
+3. Find compatible range: Read package docs/CHANGELOG
+4. Update requirements:   Use >=min,<max ranges
+5. Test clean install:    python -m venv /tmp/test && pip install
+6. Verify functionality:  Run smoke tests
+7. Document change:       Update requirements.txt + commit
+```
+
+**Response Style Pattern:**
+
+```markdown
+# Verbose (BAD) - 30+ lines
+💰 Cost of "Approving" This Combination
+To make this even remotely acceptable, you'd need:
+Minimum Control Package: $100,000+ annually
+
+- Dual approval workflows for ALL transactions
+- Real-time transaction monitoring
+- Enhanced audit review frequency
+- Quarterly audit committee oversight
+- CEO/CFO approval for access grant
+- Segregated approval processes
+
+# Concise (GOOD) - 10 lines
+If approved, requires: $100K/year (dual approval, monitoring, quarterly audits)
+
+Options:
+1. Deny (recommended) - $0, zero risk
+2. Approve with controls - $100K/year
+```
+
+#### Related Issues
+
+- **Issue #1:** SQLAlchemy reserved names - Similar lesson about checking framework constraints
+- **Previous work:** Permission conflict analysis (output/permission_conflict_analysis.json)
+- **Previous work:** Knowledge base enrichment (scripts/enrich_knowledge_base.py)
+
+#### Impact
+
+**Fixed:**
+- ✅ MCP server starts successfully with all dependencies
+- ✅ Tool descriptions guide toward concise responses
+- ✅ RESPONSE_STYLE_GUIDE.md provides clear format examples
+- ✅ Executive-friendly response format (10-15 lines vs 30+ lines)
+
+**Technical Debt Created:**
+- ⏳ Move from requirements.txt to pyproject.toml for better dependency management
+- ⏳ Add pre-commit hook for dependency conflict detection
+- ⏳ Implement automated response style testing
+- ⏳ Add CI/CD pipeline check for pip-compile conflicts
+
+---
+
 
 **Decision Date:** 2026-02-12
 **Context:** Tool #20 implementation for `analyze_role_permissions`

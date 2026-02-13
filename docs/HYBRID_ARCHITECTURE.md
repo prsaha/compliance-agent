@@ -406,6 +406,78 @@ graph TB
 
 ## Deployment Architecture
 
+### MCP Response Style Architecture (Added 2026-02-13)
+
+**Design Principle:** Concise, executive-friendly responses for conversational UI
+
+```mermaid
+graph LR
+    A[User Query] --> B[MCP Tool Handler]
+    B --> C{Analysis Type}
+    
+    C -->|Access Review| D[Analyze Permissions]
+    C -->|Violation Check| E[Check SOD Rules]
+    C -->|Risk Assessment| F[Calculate Risk]
+    
+    D --> G[Generate Detailed Data]
+    E --> G
+    F --> G
+    
+    G --> H{Response Formatter}
+    H --> I[Extract Key Metrics]
+    I --> J[Identify Top Issues]
+    J --> K[Generate Options]
+    K --> L[Create Summary]
+    
+    L --> M[Concise Response<br/>10-15 lines]
+    M --> N[Claude UI]
+    
+    style H fill:#FFD700,stroke:#FFA500,stroke-width:2px
+    style M fill:#90EE90,stroke:#006400,stroke-width:2px
+```
+
+**Response Format:**
+1. **Lead with recommendation** (✅ APPROVE / ❌ DENY / ⚠️ REVIEW)
+2. **Key metrics** (Conflicts, Risk Score, Severity Breakdown)
+3. **Top 3-5 critical issues** (Not exhaustive list)
+4. **Options** (2-3 alternatives with cost/impact)
+5. **One-line summary**
+
+**Target:** 10-15 lines (vs 30+ lines for verbose format)
+
+**Documentation:** `mcp/RESPONSE_STYLE_GUIDE.md`
+
+### Dependency Version Management (Updated 2026-02-13)
+
+**Strategy:** Compatible ranges over exact pins for resilient dependency resolution
+
+```yaml
+# Before: Brittle (exact pins)
+dependencies:
+  pydantic: "==2.5.0"              # ❌ Breaks when langchain updates
+  anthropic: "==0.42.0"            # ❌ Conflicts with langchain-anthropic
+  sentence-transformers: "==2.2.2" # ❌ Incompatible with modern huggingface-hub
+
+# After: Resilient (compatible ranges)
+dependencies:
+  pydantic: ">=2.7.4,<3.0.0"          # ✅ Compatible with langchain ecosystem
+  anthropic: ">=0.45.0,<1.0.0"        # ✅ Meets langchain-anthropic requirements
+  sentence-transformers: ">=2.3.0"     # ✅ Works with latest huggingface-hub
+  cryptography: ">=46.0.0"             # ✅ Added for config encryption
+```
+
+**Rationale:**
+- Prevents cascading dependency conflicts when packages update
+- Allows minor version updates without breaking changes
+- Documents minimum required versions for compatibility
+
+**Current Versions (as of 2026-02-13):**
+- sentence-transformers: 5.1.2 (upgraded from 2.2.2)
+- pydantic: 2.12.5 (upgraded from 2.5.0)
+- anthropic: 0.78.0 (upgraded from 0.42.0)
+- langchain-core: 0.3.34+ (upgraded from 0.3.26)
+
+
 ```mermaid
 graph TB
     subgraph "Local Development"

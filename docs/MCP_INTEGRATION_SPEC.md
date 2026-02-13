@@ -1672,6 +1672,69 @@ class NetSuiteConnector:
 
 ---
 
+### Response Style Guidelines (Added 2026-02-13)
+
+**Requirement:** MCP tool responses must be concise and executive-friendly.
+
+**Target Format:**
+- **Length:** 10-15 lines (max 20 lines)
+- **Structure:** Lead with recommendation → Key metrics → Options → Summary
+- **Avoid:** Verbose bullet lists (6+ items), repetitive sections, extensive implementation details
+
+**Example:**
+```markdown
+❌ DENY REQUEST
+
+Conflicts: 31 SOD violations (29 CRITICAL)
+Key Issue: User can create AND approve own transactions
+Risk: 77.5/100
+
+Options:
+1. Deny (recommended) - $0, zero risk
+2. Split roles - $0, assign to 2 people
+3. Approve with controls - $100K/year
+
+Recommendation: Keep roles separate.
+```
+
+**Implementation:**
+- Tool descriptions include conciseness guidance
+- `mcp/RESPONSE_STYLE_GUIDE.md` provides detailed format examples
+- FastAPI server description includes response style guidance
+
+### Dependency Requirements (Updated 2026-02-13)
+
+**Core Dependencies:**
+```python
+# LangChain & AI
+langchain>=0.3.12                   # AI framework
+langchain-core>=0.3.34              # Core components
+langchain-anthropic>=0.3.7          # Anthropic integration
+anthropic>=0.45.0,<1.0.0           # Claude API client
+
+# Data & Validation
+pydantic>=2.7.4,<3.0.0             # Data validation
+pydantic-settings>=2.4.0,<3.0.0    # Settings management
+
+# API Framework
+fastapi==0.104.1                    # Web framework
+uvicorn==0.24.0                     # ASGI server
+
+# Embeddings & ML
+sentence-transformers>=2.3.0        # Text embeddings (upgraded from 2.2.2)
+
+# Security
+cryptography>=46.0.0                # Encryption (added)
+```
+
+**Key Changes:**
+- Upgraded sentence-transformers (2.2.2 → 5.1.2) for huggingface-hub compatibility
+- Added cryptography package for config encryption
+- Changed from exact pins (`==`) to compatible ranges (`>=,<`) for better dependency resolution
+
+**Rationale:** Using version ranges instead of exact pins prevents cascading dependency conflicts when packages update their requirements.
+
+
 ## Success Criteria
 
 ### Technical Metrics
