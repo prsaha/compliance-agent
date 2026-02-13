@@ -33,7 +33,12 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI app
 app = FastAPI(
     title="Compliance MCP Server",
-    description="Model Context Protocol server for SOD Compliance System",
+    description="""Model Context Protocol server for SOD Compliance System.
+
+Response Style: Provide concise, actionable analysis. Lead with recommendation (APPROVE/DENY/REVIEW),
+summarize key metrics (conflicts, risk scores), list 3-5 critical issues, and present options as table
+or short list. Avoid verbose bullet-point lists. Target 10-15 lines per response.
+See RESPONSE_STYLE_GUIDE.md for details.""",
     version="1.0.0"
 )
 

@@ -248,7 +248,7 @@ TOOL_SCHEMAS = {
     },
 
     "analyze_access_request": {
-        "description": "Analyze an access request for SOD conflicts using level-based analysis with compensating controls",
+        "description": "Analyze an access request for SOD conflicts using level-based analysis. Returns concise summary with: conflict count, severity breakdown, top 3-5 critical issues, and direct recommendation (approve/deny/review). Avoid verbose explanations or detailed bullet lists.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -299,7 +299,7 @@ TOOL_SCHEMAS = {
     },
 
     "get_compensating_controls": {
-        "description": "Get recommended compensating controls for a specific severity level or conflict",
+        "description": "Get recommended compensating controls for a specific severity level. Returns concise list with control names, risk reduction %, and total cost estimate. Present as brief summary, not detailed bullet lists.",
         "inputSchema": {
             "type": "object",
             "properties": {
