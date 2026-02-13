@@ -156,6 +156,7 @@ class User(Base):
     # Relationships
     user_roles = relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
     violations = relationship("Violation", back_populates="user", cascade="all, delete-orphan")
+    approved_exceptions = relationship("ApprovedExceptionModel", back_populates="user", cascade="all, delete-orphan")
 
     # Indexes
     __table_args__ = (
@@ -748,3 +749,17 @@ class JobRoleMapping(Base):
 
     def __repr__(self):
         return f"<JobRoleMapping(id='{self.id}', job_title='{self.job_title}', department='{self.department}')>"
+
+
+# Import exception models (must be after User and CompensatingControl are defined)
+from models.approved_exception import (
+    ExceptionStatus,
+    ImplementationStatus,
+    RemediationStatus,
+    ReviewOutcome,
+    ApprovedExceptionModel,
+    ExceptionControlModel,
+    ExceptionViolationModel,
+    ExceptionReviewModel,
+    CompensatingControl as CompensatingControlRef  # Reference only if not already defined above
+)
