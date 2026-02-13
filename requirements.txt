@@ -16,10 +16,11 @@ psycopg2-binary==2.9.9
 sqlalchemy==2.0.23
 pgvector==0.2.4
 
-# Task Queue
+# Task Queue & Scheduling
 celery==5.3.4
 redis==5.0.1
 flower==2.0.1  # Celery monitoring
+apscheduler==3.10.4  # Background job scheduling
 
 # API Framework
 fastapi==0.104.1

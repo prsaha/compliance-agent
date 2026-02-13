@@ -16,13 +16,16 @@ from models.database import (
     SODRule,
     Violation,
     ComplianceScan,
+    SyncMetadata,
     AgentLog,
     Notification,
     AuditTrail,
     UserStatus,
     ViolationSeverity,
     ViolationStatus,
-    ScanStatus
+    ScanStatus,
+    SyncStatus,
+    SyncType
 )
 
 __all__ = [
@@ -40,6 +43,7 @@ __all__ = [
     'SODRule',
     'Violation',
     'ComplianceScan',
+    'SyncMetadata',
     'AgentLog',
     'Notification',
     'AuditTrail',
@@ -47,5 +51,7 @@ __all__ = [
     'UserStatus',
     'ViolationSeverity',
     'ViolationStatus',
-    'ScanStatus'
+    'ScanStatus',
+    'SyncStatus',
+    'SyncType'
 ]

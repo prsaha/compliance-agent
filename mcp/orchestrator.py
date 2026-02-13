@@ -6,13 +6,18 @@ routing requests to appropriate components and aggregating results.
 """
 import logging
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
+from functools import wraps
+import time
 
 # Import existing agents
 from agents.analyzer import SODAnalysisAgent
 from agents.notifier import NotificationAgent
-from agents.knowledge_base_pgvector import KnowledgeBaseAgentPgvector
+from agents.knowledge_base_pgvector import create_knowledge_base
+
+# Import LLM abstraction
+from services.llm import LLMMessage
 
 # Import connectors
 from connectors.netsuite_connector import NetSuiteConnector
@@ -22,11 +27,44 @@ from repositories.user_repository import UserRepository
 from repositories.role_repository import RoleRepository
 from repositories.violation_repository import ViolationRepository
 from repositories.sod_rule_repository import SODRuleRepository
+from repositories.job_role_mapping_repository import JobRoleMappingRepository
 
 # Import database
 from models.database_config import DatabaseConfig
 
 logger = logging.getLogger(__name__)
+
+
+# Simple time-based cache for expensive operations
+def timed_cache(seconds: int = 60):
+    """Cache decorator with time-based expiration"""
+    def decorator(func):
+        cache = {}
+        cache_time = {}
+
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # Create cache key from function name, instance id, and all arguments
+            # Convert args to strings, excluding self (args[0])
+            args_str = "_".join(str(arg) for arg in args[1:])
+            kwargs_str = "_".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
+            key = f"{id(args[0]) if args else ''}_{func.__name__}_{args_str}_{kwargs_str}"
+            current_time = time.time()
+
+            # Check if cached and not expired
+            if key in cache and (current_time - cache_time.get(key, 0)) < seconds:
+                logger.info(f"✅ Cache HIT for {func.__name__} (age: {current_time - cache_time[key]:.1f}s)")
+                return cache[key]
+
+            # Call function and cache result
+            result = func(*args, **kwargs)
+            cache[key] = result
+            cache_time[key] = current_time
+            logger.info(f"❌ Cache MISS for {func.__name__}, caching for {seconds}s")
+            return result
+
+        return wrapper
+    return decorator
 
 
 class ComplianceOrchestrator:
@@ -54,6 +92,7 @@ class ComplianceOrchestrator:
         self.role_repo = RoleRepository(self.session)
         self.violation_repo = ViolationRepository(self.session)
         self.rule_repo = SODRuleRepository(self.session)
+        self.job_role_mapping_repo = JobRoleMappingRepository(self.session)
 
         # Initialize agents
         self.analysis_agent = SODAnalysisAgent(
@@ -65,9 +104,11 @@ class ComplianceOrchestrator:
         self.notifier_agent = NotificationAgent(
             violation_repo=self.violation_repo,
             user_repo=self.user_repo,
+            job_role_mapping_repo=self.job_role_mapping_repo,
             enable_cache=True  # Enable Redis caching
         )
-        self.kb_agent = KnowledgeBaseAgentPgvector(
+        # Use factory function to auto-create embeddings from sod_rules.json
+        self.kb_agent = create_knowledge_base(
             session=self.session,
             sod_rule_repo=self.rule_repo
         )
@@ -82,9 +123,12 @@ class ComplianceOrchestrator:
 
         logger.info("ComplianceOrchestrator initialized successfully")
 
+    @timed_cache(seconds=60)  # Cache for 60 seconds (systems don't change often)
     def list_available_systems_sync(self) -> List[Dict[str, Any]]:
         """
         List all configured systems with their status
+
+        CACHED: Results cached for 60 seconds to improve performance
 
         Returns:
             List of system dictionaries with status information
@@ -126,6 +170,7 @@ class ComplianceOrchestrator:
 
         return systems
 
+    @timed_cache(seconds=300)  # Cache for 5 minutes (reviews don't change often)
     def perform_access_review_sync(
         self,
         system_name: str,
@@ -180,25 +225,40 @@ class ComplianceOrchestrator:
 
         # Step 4: Sync to database
         logger.info(f"Syncing {len(users_data)} users to database...")
-        synced_users = connector.sync_to_database_sync(users_data, self.user_repo)
+        synced_users = connector.sync_to_database_sync(users_data, self.user_repo, self.role_repo)
 
         # Step 5: Run SOD analysis
         logger.info(f"Running SOD analysis for {len(synced_users)} users...")
-        violations = self.analysis_agent.detect_sod_violations(
-            user_ids=[u.id for u in synced_users]
-        )
+        analysis_result = self.analysis_agent.analyze_all_users()
 
-        # Step 6: Calculate statistics
-        high_risk = len([v for v in violations if v.severity == "HIGH"])
-        medium_risk = len([v for v in violations if v.severity == "MEDIUM"])
-        low_risk = len([v for v in violations if v.severity == "LOW"])
+        if not analysis_result.get('success'):
+            logger.error(f"SOD analysis failed: {analysis_result.get('error')}")
+            return {
+                "system_name": system_name,
+                "timestamp": start_time.isoformat(),
+                "users_analyzed": len(synced_users),
+                "total_violations": 0,
+                "error": analysis_result.get('error', 'SOD analysis failed')
+            }
+
+        violations = analysis_result.get('violations', [])
+
+        # Step 6: Calculate statistics (violations are dicts with string severity values)
+        high_risk = len([v for v in violations if v.get('severity') == "HIGH"])
+        medium_risk = len([v for v in violations if v.get('severity') == "MEDIUM"])
+        low_risk = len([v for v in violations if v.get('severity') == "LOW"])
 
         # Step 7: Get top violators
         user_violation_counts = {}
         for violation in violations:
-            user_id = violation.user_id
+            user_id = violation.get('user_id') or violation.get('user', {}).get('id')
+            if not user_id:
+                continue
+
             if user_id not in user_violation_counts:
-                user = self.user_repo.get_user_by_id(user_id)
+                user = self.user_repo.get_user_by_uuid(str(user_id))
+                if not user:
+                    continue
                 user_violation_counts[user_id] = {
                     "user": user,
                     "count": 0,
@@ -207,9 +267,10 @@ class ComplianceOrchestrator:
                     "low_risk": 0
                 }
             user_violation_counts[user_id]["count"] += 1
-            if violation.severity == "HIGH":
+            severity_str = violation.get('severity', 'LOW')
+            if severity_str == "HIGH":
                 user_violation_counts[user_id]["high_risk"] += 1
-            elif violation.severity == "MEDIUM":
+            elif severity_str == "MEDIUM":
                 user_violation_counts[user_id]["medium_risk"] += 1
             else:
                 user_violation_counts[user_id]["low_risk"] += 1
@@ -258,6 +319,7 @@ class ComplianceOrchestrator:
             "analysis_type": analysis_type
         }
 
+    @timed_cache(seconds=60)  # Cache for 1 minute (user lookups)
     def get_user_violations_sync(
         self,
         system_name: str,
@@ -286,8 +348,52 @@ class ComplianceOrchestrator:
             except:
                 pass
 
+        # Auto-sync user from source system if not found in database
         if not user:
-            raise ValueError(f"User not found: {user_identifier}")
+            logger.info(f"User not in database, attempting auto-sync from {system_name}...")
+            connector = self.connectors.get(system_name.lower())
+
+            if not connector:
+                raise ValueError(f"Unknown system: {system_name}")
+
+            try:
+                # Fetch user from source system
+                users_data = connector.fetch_users_with_roles_sync(
+                    include_permissions=False,
+                    include_inactive=False
+                )
+
+                # Find the requested user
+                source_user = None
+                for u in users_data:
+                    if u.get('email') == user_identifier or str(u.get('user_id')) == user_identifier:
+                        source_user = u
+                        break
+
+                if source_user:
+                    # Sync user to database
+                    logger.info(f"✅ Found user in {system_name}, syncing to database...")
+                    user_data = {
+                        'user_id': str(source_user.get('user_id')),
+                        'internal_id': str(source_user.get('internal_id', source_user.get('user_id'))),
+                        'name': source_user.get('name'),
+                        'email': source_user.get('email'),
+                        'status': 'ACTIVE' if source_user.get('is_active', True) else 'INACTIVE',
+                        'department': source_user.get('department'),
+                        'subsidiary': source_user.get('subsidiary'),
+                        'employee_id': source_user.get('employee_id'),
+                        'job_function': source_user.get('job_function'),
+                        'title': source_user.get('title'),
+                        'location': source_user.get('location')
+                    }
+                    user = self.user_repo.create_user(user_data)
+                    logger.info(f"✅ User synced: {user.email} (UUID: {user.id})")
+                else:
+                    raise ValueError(f"User not found in {system_name}: {user_identifier}")
+
+            except Exception as e:
+                logger.error(f"Failed to auto-sync user: {str(e)}")
+                raise ValueError(f"User not found: {user_identifier}")
 
         # Get violations
         violations = self.violation_repo.get_violations_by_user(user.id)
@@ -301,12 +407,12 @@ class ComplianceOrchestrator:
             formatted_violations.append({
                 "id": str(v.id),
                 "rule_name": v.rule.rule_name,
-                "severity": v.severity,
-                "description": v.rule.description,
-                "risk_description": v.rule.risk,
-                "status": v.status,
+                "severity": v.severity.value if hasattr(v.severity, 'value') else str(v.severity),
+                "description": v.description or v.rule.description,
+                "risk_score": v.risk_score,
+                "status": v.status.value if hasattr(v.status, 'value') else str(v.status),
                 "detected_at": v.detected_at.isoformat(),
-                "conflicting_roles": [r.role_name for r in v.rule.conflicting_roles]
+                "conflicting_roles": v.conflicting_roles or []
             })
 
         # Generate AI analysis (if requested)
@@ -327,7 +433,7 @@ class ComplianceOrchestrator:
             "violations": formatted_violations,
             "ai_analysis": ai_analysis,
             "department": user.department,
-            "is_active": user.is_active
+            "is_active": user.status.value == "ACTIVE"
         }
 
     def remediate_violation_sync(
@@ -442,6 +548,7 @@ class ComplianceOrchestrator:
             "created_at": datetime.utcnow().isoformat()
         }
 
+    @timed_cache(seconds=120)  # Cache for 2 minutes (stats change slowly)
     def get_violation_stats_sync(
         self,
         systems: Optional[List[str]] = None,
@@ -522,7 +629,8 @@ class ComplianceOrchestrator:
             return "No violations found - system is compliant."
 
         # Create summary for AI
-        high_risk_count = len([v for v in violations if v.severity == "HIGH"])
+        # Note: violations are dictionaries, not objects
+        high_risk_count = len([v for v in violations if v.get('severity') == "HIGH"])
         total_count = len(violations)
         top_3 = top_violators[:3]
 
@@ -544,9 +652,8 @@ Be specific and actionable."""
 
         try:
             # Use the same LLM as NotificationAgent
-            response = self.notifier_agent.llm.generate([
-                {"role": "user", "content": prompt}
-            ])
+            messages = [LLMMessage(role="user", content=prompt)]
+            response = self.notifier_agent.llm.generate(messages)
             return response.content.strip()
         except Exception as e:
             logger.error(f"Failed to generate recommendations: {str(e)}")
@@ -594,3 +701,99 @@ Be specific and actionable."""
             next_run = now + timedelta(days=1)
 
         return next_run.strftime("%Y-%m-%d %H:%M:%S") + f" {timezone}"
+
+    def list_all_users_sync(
+        self,
+        system_name: str = "netsuite",
+        include_inactive: bool = False,
+        filter_by_department: Optional[str] = None,
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """
+        List all users from a system with their roles
+
+        Args:
+            system_name: System to query
+            include_inactive: Include inactive users
+            filter_by_department: Optional department filter
+            limit: Maximum number of users to return
+
+        Returns:
+            Dictionary with user list and summary
+        """
+        logger.info(f"Listing all users from {system_name}")
+
+        # Get connector
+        connector = self.connectors.get(system_name)
+        if not connector:
+            raise ValueError(f"System not configured: {system_name}")
+
+        # Fetch users from external system
+        logger.info("Fetching users from external system...")
+        users_data = connector.fetch_users_with_roles_sync(
+            include_permissions=False,  # Don't need permissions for listing
+            include_inactive=include_inactive
+        )
+
+        if not users_data:
+            return {
+                "system_name": system_name,
+                "total_users": 0,
+                "active_users": 0,
+                "inactive_users": 0,
+                "users": []
+            }
+
+        # Filter by department if specified
+        if filter_by_department:
+            users_data = [
+                u for u in users_data
+                if u.get('department', '').lower() == filter_by_department.lower()
+            ]
+
+        # Get user IDs for violation lookup
+        user_emails = [u['email'] for u in users_data if u.get('email')]
+
+        # Get violation counts from database
+        violation_counts = {}
+        try:
+            for email in user_emails:
+                user = self.user_repo.get_user_by_email(email, system_name)
+                if user:
+                    violations = self.violation_repo.get_violations_by_user(user.id)
+                    violation_counts[email] = len(violations)
+        except Exception as e:
+            logger.warning(f"Could not fetch violation counts: {e}")
+
+        # Format user list
+        formatted_users = []
+        active_count = 0
+        inactive_count = 0
+
+        for user_data in users_data[:limit]:
+            is_active = user_data.get('status', '').upper() == 'ACTIVE'
+            if is_active:
+                active_count += 1
+            else:
+                inactive_count += 1
+
+            formatted_users.append({
+                "name": user_data.get('name', 'Unknown'),
+                "email": user_data.get('email', ''),
+                "is_active": is_active,
+                "department": user_data.get('department'),
+                "role_count": len(user_data.get('roles', [])),
+                "roles": [r.get('name') for r in user_data.get('roles', [])],
+                "violation_count": violation_counts.get(user_data.get('email'), 0)
+            })
+
+        # Sort by name
+        formatted_users.sort(key=lambda x: x['name'].lower())
+
+        return {
+            "system_name": system_name,
+            "total_users": len(users_data),
+            "active_users": active_count,
+            "inactive_users": inactive_count,
+            "users": formatted_users
+        }

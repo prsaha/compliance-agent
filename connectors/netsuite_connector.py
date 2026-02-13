@@ -79,10 +79,11 @@ class NetSuiteConnector(BaseConnector):
 
         try:
             # Use paginated fetch for all users
+            # NetSuite RESTlet limits to 200 users per page max
             result = self.client.get_all_users_paginated(
                 include_permissions=include_permissions,
                 status='ACTIVE' if not include_inactive else 'ALL',
-                page_size=1000
+                page_size=200
             )
 
             if not result.get('success'):
@@ -136,7 +137,8 @@ class NetSuiteConnector(BaseConnector):
     def sync_to_database_sync(
         self,
         users_data: List[Dict[str, Any]],
-        user_repo
+        user_repo,
+        role_repo
     ) -> List[Any]:
         """
         Sync NetSuite users to local database
@@ -160,30 +162,66 @@ class NetSuiteConnector(BaseConnector):
                     logger.warning(f"Skipping user without email: {user_data.get('name')}")
                     continue
 
-                # Upsert user
-                user = user_repo.upsert_user(
-                    name=user_data.get('name', ''),
-                    email=email,
-                    department=user_data.get('department'),
-                    is_active=user_data.get('is_active', True),
-                    source_system='netsuite',
-                    job_function=user_data.get('job_function'),
-                    business_unit=user_data.get('business_unit')
+                # Extract job title from various possible field names
+                # NetSuite might return it as: title, jobTitle, jobtitle, job_title
+                job_title = (
+                    user_data.get('title') or
+                    user_data.get('jobTitle') or
+                    user_data.get('jobtitle') or
+                    user_data.get('job_title') or
+                    user_data.get('jobTitle.name') or  # NetSuite often uses .name for text fields
+                    user_data.get('title.name') or
+                    None
                 )
+
+                # Log if title is missing (for debugging)
+                if not job_title:
+                    logger.debug(f"No job title found for {email}. Available fields: {list(user_data.keys())}")
+
+                # Upsert user - prepare dictionary for upsert_user
+                user_dict = {
+                    'user_id': str(user_data.get('user_id', '')),
+                    'internal_id': str(user_data.get('internal_id', user_data.get('user_id', ''))),
+                    'name': user_data.get('name', ''),
+                    'email': email,
+                    'status': 'ACTIVE' if user_data.get('is_active', True) else 'INACTIVE',
+                    'department': user_data.get('department'),
+                    'subsidiary': user_data.get('subsidiary'),
+                    'employee_id': user_data.get('employee_id'),
+                    'job_function': user_data.get('job_function'),
+                    'business_unit': user_data.get('business_unit'),
+                    'title': job_title,  # Use extracted job title
+                    'location': user_data.get('location'),
+                    'supervisor': user_data.get('supervisor'),
+                    'supervisor_id': user_data.get('supervisor_id'),
+                    'hire_date': user_data.get('hire_date'),
+                    'last_login': user_data.get('last_login')
+                }
+                user = user_repo.upsert_user(user_dict)
 
                 # Sync roles
                 roles = user_data.get('roles', [])
                 for role_data in roles:
                     role_name = role_data.get('role_name')
-                    if not role_name:
+                    role_id_str = str(role_data.get('role_id', role_name))
+
+                    if not role_name or not role_id_str:
                         continue
 
+                    # Upsert role first
+                    role = role_repo.upsert_role({
+                        'role_id': role_id_str,
+                        'role_name': role_name,
+                        'is_custom': role_data.get('is_custom', False),
+                        'description': role_data.get('description'),
+                        'permission_count': len(role_data.get('permissions', [])),
+                        'permissions': role_data.get('permissions', [])
+                    })
+
                     # Assign role to user
-                    user_repo.assign_role(
-                        user_id=user.id,
-                        role_name=role_name,
-                        source_system='netsuite',
-                        permissions=role_data.get('permissions', [])
+                    user_repo.assign_role_to_user(
+                        user_id=str(user.id),
+                        role_id=str(role.id)
                     )
 
                 synced_users.append(user)
@@ -204,27 +242,32 @@ class NetSuiteConnector(BaseConnector):
         Get the date of the last sync/review
 
         Args:
-            violation_repo: ViolationRepository instance
+            violation_repo: ViolationRepository instance (for compatibility)
 
         Returns:
             Last sync datetime or None
         """
         try:
-            # Get most recent violation for this system
-            violations = violation_repo.get_all_violations()
-            netsuite_violations = [
-                v for v in violations
-                if v.user and v.user.source_system == 'netsuite'
-            ]
+            # Use SyncMetadataRepository to get last sync date
+            from repositories.sync_metadata_repository import SyncMetadataRepository
+            from models.database_config import DatabaseConfig
 
-            if netsuite_violations:
-                # Sort by detected_at and get most recent
-                sorted_violations = sorted(
-                    netsuite_violations,
-                    key=lambda x: x.detected_at,
-                    reverse=True
-                )
-                return sorted_violations[0].detected_at
+            db_config = DatabaseConfig()
+            session = db_config.get_session()
+            sync_repo = SyncMetadataRepository(session)
+
+            last_sync = sync_repo.get_last_successful_sync('netsuite')
+
+            if last_sync and last_sync.completed_at:
+                return last_sync.completed_at
+
+            # Fallback: check for recent violations if no sync record
+            try:
+                open_violations = violation_repo.get_open_violations(limit=1)
+                if open_violations:
+                    return open_violations[0].detected_at
+            except Exception:
+                pass
 
             return None
 

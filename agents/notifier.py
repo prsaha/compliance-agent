@@ -25,6 +25,7 @@ from models.database import (
 )
 from repositories.violation_repository import ViolationRepository
 from repositories.user_repository import UserRepository
+from repositories.job_role_mapping_repository import JobRoleMappingRepository
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class NotificationAgent:
         self,
         violation_repo: ViolationRepository,
         user_repo: UserRepository,
+        job_role_mapping_repo: Optional[JobRoleMappingRepository] = None,
         sendgrid_api_key: Optional[str] = None,
         slack_webhook_url: Optional[str] = None,
         enable_cache: bool = True
@@ -54,12 +56,14 @@ class NotificationAgent:
         Args:
             violation_repo: Violation repository instance
             user_repo: User repository instance
+            job_role_mapping_repo: Job role mapping repository instance
             sendgrid_api_key: SendGrid API key for email
             slack_webhook_url: Slack webhook URL for notifications
             enable_cache: Whether to enable Redis caching for AI analysis
         """
         self.violation_repo = violation_repo
         self.user_repo = user_repo
+        self.job_role_mapping_repo = job_role_mapping_repo
 
         # Initialize cache service
         redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
@@ -1048,32 +1052,71 @@ Recommended Actions:
         if len(violations) > 3:
             violation_summary += f"\n... and {len(violations) - 3} more violations"
 
+        # Check if this role combination is acceptable for user's job title
+        job_role_context = ""
+        if self.job_role_mapping_repo and user.title:
+            try:
+                validation_result = self.job_role_mapping_repo.check_role_combination_acceptable(
+                    user.title,
+                    role_names
+                )
+
+                if validation_result.get('is_acceptable'):
+                    # This is an ACCEPTABLE combination for this job title
+                    job_role_context = f"""
+
+═══════════════════════════════════════════════════════════════════
+IMPORTANT JOB ROLE CONTEXT - READ THIS FIRST
+═══════════════════════════════════════════════════════════════════
+
+For job title '{user.title}', this role combination is ACCEPTABLE and STANDARD per company policy.
+
+✅ This is NOT an unexpected configuration - it is the PROPER setup for this role.
+
+Business Justification:
+{validation_result.get('business_justification', 'Role combination approved for this job function')}
+
+Required Compensating Controls: {', '.join(validation_result.get('typical_controls', []))}
+Requires Controls: {"YES" if validation_result.get('requires_controls') else "NO"}
+Approval Level: {validation_result.get('approval_required', 'Standard approval')}
+
+Your analysis MUST acknowledge that:
+1. This configuration is EXPECTED and APPROVED for this job title
+2. While technical SOD conflicts exist, they are ACCEPTABLE with proper controls
+3. Focus on COMPENSATING CONTROLS (monitoring, approval workflows, audit logs)
+4. DO NOT recommend role removal - recommend control implementation instead
+5. This is a legitimate business need, not a compliance violation to fix
+
+Shift your tone from "violation that must be fixed" to "accepted configuration that requires oversight."
+═══════════════════════════════════════════════════════════════════
+"""
+            except Exception as e:
+                logger.error(f"Error checking job role mapping: {str(e)}")
+
         # Create messages using LLM abstraction layer
-        system_message = """You are a compliance analyst explaining SOD (Segregation of Duties) violations.
+        system_message = """You are a compliance analyst. Provide ONLY a brief summary paragraph.
 
-Your task is to analyze why a user has compliance issues based on their role assignments.
+STRICT REQUIREMENTS:
+- Maximum 3-4 sentences total
+- NO markdown headers (no #, ##, ###)
+- NO bullet points or lists
+- NO sections (Summary, Risk Context, Required Action, etc.)
+- Plain text paragraph ONLY
 
-Provide a clear, concise summary (3-4 sentences) that:
-1. Identifies the problematic role combination
-2. Explains the specific risks this creates
-3. States why this violates SOD principles
-4. Suggests the primary remediation action
+Format: One short paragraph that states:
+1. Is this configuration acceptable for the job title? (Yes/No)
+2. Key risk or justification (one sentence)
+3. Primary action needed (implement controls OR remove role)
 
-Be direct and specific. Focus on business risk, not technical details."""
+If ACCEPTABLE for job title: Focus on compensating controls needed.
+If NOT ACCEPTABLE: State which role to remove."""
 
-        user_message = f"""Analyze this compliance issue:
+        user_message = f"""User: {user.name} ({user.title or "Unknown"})
+Roles: {', '.join(role_names)}
+Violations: {len(violations)}
+{violation_summary}{job_role_context}
 
-User: {user.name}
-Department: {user.department or "Unknown"}
-Title: {user.title or "Unknown"}
-
-Assigned Roles:
-{chr(10).join([f"- {role}" for role in role_names])}
-
-Violations Detected: {len(violations)}
-{violation_summary}
-
-Provide a brief analysis explaining why these roles are problematic and what should be done."""
+Provide 2-3 sentence summary: Is this OK for the job title? What action is needed?"""
 
         messages = [
             LLMMessage(role="system", content=system_message),

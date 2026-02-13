@@ -1,0 +1,752 @@
+# Claude Code Project Guide: SOD Compliance System
+
+**Project:** AI-Powered Segregation of Duties (SOD) Compliance System
+**Version:** 1.0
+**Last Updated:** 2026-02-12
+**Primary Language:** Python 3.9+
+**Framework:** FastAPI with MCP (Model Context Protocol)
+
+---
+
+## 🎯 Project Overview
+
+This is an autonomous compliance monitoring system that peforms user access review, sod analysis, risk assessement and reporting across key business systems - NetSuite ERP, Okta, Salesforce, Coupa etc. The system uses Claude Opus 4.6 for intelligent analysis and operates as an MCP server, providing compliance tools to Claude Code and other MCP clients.
+
+### Core Capabilities
+
+1. **Autonomous Data Collection**: Background agent syncs user/role/permission data from NetSuite (daily full sync + hourly incremental)
+2. **AI-Powered Analysis**: Claude Opus 4.6 analyzes 18 SOD rules against user access patterns
+3. **MCP Integration**: 11 tools available via Model Context Protocol for real-time compliance queries
+4. **Knowledge Base**: pgvector-powered semantic search for compliance policies and remediation guidance
+
+### Success Metrics
+
+- ✅ 1,928/1,933 users synced from NetSuite (99.7% coverage)
+- ✅ 18 SOD rules implemented and active
+- ✅ 55x query performance improvement (on-demand → cached)
+- ✅ 11 MCP tools operational
+- ✅ Autonomous agent running 24/7
+
+---
+
+## 🏗️ Architecture
+
+### Three-Phase System
+
+```
+Phase 1: Data Collection (Autonomous Agent)
+├── NetSuite RESTlet API → Python Connector
+├── Scheduled Sync (APScheduler)
+└── PostgreSQL Storage
+
+Phase 2: AI Analysis (Claude Opus 4.6)
+├── SOD Rule Engine (18 rules)
+├── LLM Abstraction Layer (multi-provider)
+└── Violation Detection & Severity Scoring
+
+Phase 3: Knowledge Base (pgvector)
+├── Policy Documents (chunked, embedded)
+├── Semantic Search (OpenAI embeddings)
+└── RAG for Remediation Guidance
+```
+
+### Key Components
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| **MCP Server** | `mcp/mcp_server.py` | FastAPI server exposing 11 compliance tools |
+| **Data Collector** | `agents/data_collector.py` | Autonomous agent for scheduled syncing |
+| **SOD Analyzer** | `agents/analyzer.py` | AI-powered violation detection |
+| **NetSuite Connector** | `connectors/netsuite_connector.py` | RESTlet API integration |
+| **Knowledge Agent** | `agents/knowledge_base_agent.py` | pgvector semantic search |
+| **LLM Layer** | `services/llm_service.py` | Multi-provider abstraction (Anthropic/OpenAI/Gemini) |
+
+---
+
+## 📁 Directory Structure
+
+```
+compliance-agent/
+├── agents/              # Autonomous agents (collector, analyzer, knowledge)
+├── connectors/          # External system integrations (NetSuite)
+├── database/
+│   ├── migrations/     # Alembic database migrations
+│   └── seed_data/      # SOD rules, test data
+├── docs/               # Comprehensive documentation
+│   ├── LESSONS_LEARNED.md       # All 15 issues + solutions (CRITICAL REFERENCE)
+│   ├── MCP_SERVER_MANAGEMENT.md # Operations guide
+│   └── *.md            # Architecture, troubleshooting, user guides
+├── mcp/                # Model Context Protocol server
+├── models/             # SQLAlchemy ORM models
+├── repositories/       # Data access layer
+├── scripts/            # Management scripts (restart, status check)
+├── services/           # Business logic (NetSuite client, LLM service)
+└── tests/              # Test suites
+
+Key Files:
+- .env                  # Environment config (DATABASE_URL, API keys)
+- requirements.txt      # Python dependencies
+- CLAUDE.md            # This file
+```
+
+---
+
+## 🔧 Technology Stack
+
+### Core Technologies
+
+- **Python 3.9+**: Primary language
+- **FastAPI**: Web framework for MCP server
+- **SQLAlchemy**: ORM for PostgreSQL
+- **PostgreSQL 14+**: Database with pgvector extension
+- **APScheduler**: Background job scheduling
+- **Alembic**: Database migrations
+
+### External Integrations
+
+- **NetSuite RESTlet API**: User/role/permission data source
+- **Anthropic API (Claude Opus 4.6)**: SOD analysis LLM
+- **OpenAI API**: Embeddings for semantic search
+- **pgvector**: Vector similarity search for RAG
+
+### Key Libraries
+
+```python
+fastapi==0.104.1          # MCP server
+uvicorn==0.24.0           # ASGI server
+sqlalchemy==2.0.23        # ORM
+psycopg2-binary==2.9.9    # PostgreSQL driver
+anthropic==0.8.0          # Claude API client
+openai==1.6.1             # OpenAI API client
+apscheduler==3.10.4       # Job scheduler
+pgvector==0.2.4           # Vector search
+alembic==1.13.0           # Migrations
+```
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+```bash
+# Check Python version (requires 3.9+)
+python3 --version
+
+# Check PostgreSQL (requires 14+ with pgvector)
+psql --version
+
+# Ensure environment variables are set
+cat .env | grep -E "DATABASE_URL|ANTHROPIC_API_KEY|NETSUITE_"
+```
+
+### Starting the MCP Server
+
+```bash
+# Option 1: Using restart script (recommended)
+./scripts/restart_mcp.sh
+
+# Option 2: Manual start
+python3 -m mcp.mcp_server > /tmp/mcp_server.log 2>&1 &
+
+# Check status
+./scripts/check_mcp_status.sh
+
+# View logs
+tail -f /tmp/mcp_server.log
+```
+
+### Connecting Claude Desktop (STDIO Bridge)
+
+The MCP server uses HTTP transport, but Claude Desktop expects STDIO. We use a bridge to connect them:
+
+**Bridge File:** `/Users/prabal.saha/mcp_stdio_http_bridge.py`
+
+```bash
+# Add to Claude Desktop config:
+# ~/Library/Application Support/Claude/claude_desktop_config.json
+
+{
+  "mcpServers": {
+    "compliance-system": {
+      "command": "python3",
+      "args": ["/Users/prabal.saha/mcp_stdio_http_bridge.py"]
+    }
+  }
+}
+
+# Test bridge
+echo '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":1}' | python3 /Users/prabal.saha/mcp_stdio_http_bridge.py
+
+# Check Claude Desktop logs
+tail -f ~/Library/Logs/Claude/mcp-server-compliance-system.log
+```
+
+**See:** `docs/MCP_STDIO_HTTP_BRIDGE.md` for complete documentation.
+
+### Database Operations
+
+```bash
+# Connect to database
+psql $DATABASE_URL
+
+# Run migrations
+alembic upgrade head
+
+# Rollback migration
+alembic downgrade -1
+
+# Create new migration
+alembic revision --autogenerate -m "Description"
+```
+
+---
+
+## 📋 Development Guidelines
+
+### Code Conventions
+
+1. **Python Style**: Follow PEP 8, use type hints
+2. **Naming**:
+   - Classes: `PascalCase` (e.g., `DataCollectionAgent`)
+   - Functions/methods: `snake_case` (e.g., `analyze_user`)
+   - Constants: `UPPER_SNAKE_CASE` (e.g., `DEFAULT_PAGE_SIZE`)
+3. **Imports**: Standard library → Third-party → Local (separated by blank lines)
+4. **Docstrings**: Use for all public classes/functions
+
+### Database Guidelines
+
+⚠️ **CRITICAL**: See `docs/LESSONS_LEARNED.md` Issues #1, #14 for database pitfalls
+
+1. **Reserved Names**: Never use `metadata` as a column name (SQLAlchemy reserves it)
+2. **Enum Values**: Python enums use UPPERCASE, ensure DB constraints match
+3. **Foreign Keys**: Always verify referential integrity chain before inserting
+4. **Transactions**: Use proper session management, handle rollbacks
+
+Example:
+```python
+# ✅ GOOD: Enum values match DB constraints
+class SyncStatus(enum.Enum):
+    PENDING = "PENDING"     # DB constraint expects UPPERCASE
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+
+# ✅ GOOD: Proper column naming
+class SyncMetadata(Base):
+    sync_metadata = Column(JSON)  # Avoid 'metadata' (reserved)
+
+# ✅ GOOD: Foreign key chain
+# sync_metadata ← users
+# compliance_scans → violations (scan_id FK)
+```
+
+### NetSuite Integration
+
+⚠️ **CRITICAL**: See `docs/LESSONS_LEARNED.md` Issue #13 for pagination bug
+
+1. **Page Size Limit**: NetSuite RESTlet caps at 200 users per request (not 1000!)
+2. **Pagination**: Always use `page_size=200` for user queries
+3. **Error Handling**: NetSuite silently truncates, verify record counts
+4. **Rate Limiting**: Respect API limits (consider delays for large syncs)
+
+Example:
+```python
+# ✅ GOOD: Correct page size
+result = self.client.get_all_users_paginated(
+    page_size=200,  # NetSuite's actual limit
+    include_permissions=True
+)
+
+# ❌ BAD: Will silently lose 79.2% of data
+result = self.client.get_all_users_paginated(
+    page_size=1000,  # NetSuite caps at 200
+    include_permissions=True
+)
+```
+
+### LLM Integration
+
+1. **Model Selection**: Use `claude-opus-4.6` for SOD analysis (most capable)
+2. **Message Format**: Use proper roles (`system`, `user`, `assistant`)
+3. **Error Handling**: LLM calls can fail, implement retries with exponential backoff
+4. **Token Management**: Be mindful of context limits (200K tokens for Opus 4.6)
+
+Example:
+```python
+# ✅ GOOD: Proper message format
+messages = [
+    {"role": "system", "content": system_prompt},
+    {"role": "user", "content": user_query}
+]
+
+# ❌ BAD: Wrong key names
+messages = [
+    {"type": "system", "text": system_prompt}  # Wrong keys
+]
+```
+
+---
+
+## 🧪 Testing
+
+### Smoke Test Suite
+
+```bash
+# Run all tests
+python3 -m pytest tests/
+
+# Run specific test
+python3 -m pytest tests/test_data_collection.py::test_full_sync
+
+# Run with verbose output
+python3 -m pytest -v tests/
+```
+
+### Manual Testing Commands
+
+```bash
+# Test MCP tools (from Claude Code or MCP client)
+list_systems
+get_violation_stats
+list_all_users(limit=10)
+
+# Test data collection
+python3 -c "from agents.data_collector import DataCollectionAgent; agent = DataCollectionAgent(); agent.full_sync()"
+
+# Test database connection
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM users;"
+
+# Test NetSuite connection
+python3 -c "from services.netsuite_client import NetSuiteClient; client = NetSuiteClient(); print(client.get_all_users_paginated(page_size=10))"
+```
+
+---
+
+## 🔍 Common Tasks
+
+### 1. Adding a New SOD Rule
+
+1. Add rule to `database/seed_data/sod_rules.json`
+2. Rule format:
+   ```json
+   {
+     "rule_code": "UNIQUE_CODE",
+     "rule_name": "Descriptive Name",
+     "description": "What this rule checks",
+     "conflicting_permissions": ["PERM1", "PERM2"],
+     "severity": "CRITICAL|HIGH|MEDIUM|LOW",
+     "risk_category": "Financial|Security|Compliance"
+   }
+   ```
+3. Restart MCP server to load new rule
+4. Trigger sync to apply: `trigger_manual_sync(sync_type="full")`
+
+### 2. Adding a New MCP Tool
+
+1. Add tool function to `mcp/mcp_server.py`
+2. Follow FastAPI route pattern:
+   ```python
+   @app.post("/tools/{tool_name}")
+   async def tool_name(request: ToolRequest) -> ToolResponse:
+       # Implementation
+       pass
+   ```
+3. Add to `TOOLS` list in startup function
+4. Restart server
+5. Verify with `tools/list` MCP request
+
+### 3. Debugging Data Collection Issues
+
+```bash
+# 1. Check agent status
+./scripts/check_mcp_status.sh
+
+# 2. Check recent logs
+tail -100 /tmp/mcp_server.log | grep -i "error\|warning"
+
+# 3. Check sync history
+psql $DATABASE_URL -c "SELECT * FROM sync_metadata ORDER BY started_at DESC LIMIT 5;"
+
+# 4. Check user counts
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM users;"
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM users WHERE is_active = true;"
+
+# 5. Trigger manual sync
+# From Claude Code: trigger_manual_sync(sync_type="full")
+
+# 6. Check for violations
+psql $DATABASE_URL -c "SELECT severity, COUNT(*) FROM violations GROUP BY severity;"
+```
+
+### 4. Database Migration
+
+```bash
+# Create migration after model changes
+alembic revision --autogenerate -m "Add new column to violations table"
+
+# Review generated migration in database/migrations/versions/
+
+# Apply migration
+alembic upgrade head
+
+# If issues, rollback
+alembic downgrade -1
+
+# Check current version
+alembic current
+```
+
+---
+
+## ⚠️ Critical Issues to Avoid
+
+### **MUST READ**: `docs/LESSONS_LEARNED.md`
+
+This document contains 15 major issues encountered during development. **Read this before making changes** to avoid repeating mistakes.
+
+### Top 5 Critical Issues
+
+1. **Issue #13**: NetSuite page_size=1000 causes 79.2% data loss (use 200)
+2. **Issue #1**: Never use `metadata` as SQLAlchemy column name (reserved)
+3. **Issue #14**: Python enum values must match DB CHECK constraints (use UPPERCASE)
+4. **Issue #15**: Create `compliance_scans` record before inserting violations
+5. **Issue #9**: Verify repository methods exist before calling (check interfaces)
+
+### Common Pitfalls
+
+```python
+# ❌ WRONG: These will break
+class MyModel(Base):
+    metadata = Column(JSON)  # SQLAlchemy reserves this
+
+sync.status = "pending"  # DB expects "PENDING" (uppercase)
+
+# Inserting violation without compliance_scan
+violation.scan_id = sync.id  # FK references compliance_scans, not sync_metadata
+
+# ❌ WRONG: NetSuite pagination
+get_users(page_size=1000)  # Silently caps at 200, loses data
+
+# ✅ RIGHT: Correct implementations
+class MyModel(Base):
+    sync_metadata = Column(JSON)  # Use different name
+
+sync.status = SyncStatus.PENDING  # Use enum (UPPERCASE value)
+
+# Create scan first, then violations
+scan = ComplianceScan(...)
+session.add(scan)
+session.commit()
+violation.scan_id = scan.id  # Now FK is valid
+
+get_users(page_size=200)  # NetSuite's actual limit
+```
+
+---
+
+## 🛠️ Troubleshooting
+
+### Server Won't Start
+
+```bash
+# Check if port 8080 is in use
+lsof -i :8080
+
+# Kill existing process
+pkill -f "mcp.mcp_server"
+
+# Check Python environment
+python3 -c "import mcp.mcp_server"
+
+# Check database connection
+psql $DATABASE_URL -c "SELECT 1;"
+
+# Review startup logs
+cat /tmp/mcp_server.log
+```
+
+### Data Collection Not Working
+
+```bash
+# 1. Check agent status
+psql $DATABASE_URL -c "SELECT * FROM sync_metadata ORDER BY started_at DESC LIMIT 1;"
+
+# 2. Check for errors in logs
+grep -i "error" /tmp/mcp_server.log | tail -20
+
+# 3. Verify NetSuite credentials
+python3 -c "from services.netsuite_client import NetSuiteClient; c=NetSuiteClient(); print(c.get_all_users_paginated(page_size=1))"
+
+# 4. Check scheduled jobs
+grep -i "scheduler\|job" /tmp/mcp_server.log | tail -10
+```
+
+### Database Issues
+
+```bash
+# Check connection
+psql $DATABASE_URL -c "\conninfo"
+
+# Check table structure
+psql $DATABASE_URL -c "\d users"
+
+# Check for constraint violations
+psql $DATABASE_URL -c "SELECT conname, contype FROM pg_constraint WHERE conrelid = 'violations'::regclass;"
+
+# Reset database (⚠️ DESTRUCTIVE)
+psql $DATABASE_URL -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+alembic upgrade head
+```
+
+### MCP Tools Not Working
+
+```bash
+# List available tools
+curl -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+
+# Test specific tool
+curl -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_systems","arguments":{}}}'
+```
+
+---
+
+## 📚 Documentation
+
+### Essential Reading
+
+1. **LESSONS_LEARNED.md**: All 15 issues + root causes + solutions (READ FIRST)
+2. **MCP_SERVER_MANAGEMENT.md**: Server operations, monitoring, troubleshooting
+3. **MCP_STDIO_HTTP_BRIDGE.md**: STDIO-HTTP bridge for Claude Desktop
+4. **ARCHITECTURE.md**: System design, data flow, component interactions
+5. **DEMO_INSTRUCTIONS.md**: Step-by-step demo walkthrough
+
+### Quick Reference
+
+| Topic | Document | Section |
+|-------|----------|---------|
+| Database schema | `ARCHITECTURE.md` | Database Design |
+| SOD rules | `database/seed_data/sod_rules.json` | - |
+| API endpoints | `mcp/mcp_server.py` | FastAPI routes |
+| Server management | `MCP_SERVER_MANAGEMENT.md` | All sections |
+| Claude Desktop bridge | `MCP_STDIO_HTTP_BRIDGE.md` | All sections |
+| Known issues | `LESSONS_LEARNED.md` | Issues #1-15 |
+
+---
+
+## 🎓 Project-Specific Knowledge
+
+### SOD (Segregation of Duties) Basics
+
+**Definition**: Security principle that no single person should have permissions that could enable fraud
+
+**Example Violation**: Same user can:
+- Create vendor (Vendor Master Data)
+- Create invoice (AP Processing)
+- Approve payment (AP Approval)
+→ Risk: Could create fake vendor and pay themselves
+
+### 18 Active SOD Rules
+
+| Risk Category | Rule Count | Examples |
+|---------------|------------|----------|
+| Financial | 8 | AP Entry vs Approval, Journal Entry vs Approval |
+| Security | 5 | Admin vs Regular User, Script Dev vs Production |
+| Compliance | 5 | Compliance Officer Independence, Audit Log Access |
+
+### Severity Levels
+
+- **CRITICAL**: Direct fraud risk, immediate remediation required
+- **HIGH**: Significant risk, remediate within 30 days
+- **MEDIUM**: Moderate risk, remediate within 90 days
+- **LOW**: Minor risk, document compensating controls
+
+---
+
+## 🔐 Security Considerations
+
+### Sensitive Files (Never Commit)
+
+```bash
+.env                    # API keys, database credentials
+*.log                   # May contain sensitive data
+database/compliance_db/ # Local database files
+__pycache__/           # Compiled Python files
+```
+
+### Environment Variables Required
+
+```bash
+# Database
+DATABASE_URL="postgresql://user:pass@localhost:5432/compliance_db"
+
+# NetSuite
+NETSUITE_ACCOUNT_ID="5260239_SB1"
+NETSUITE_CONSUMER_KEY="..."
+NETSUITE_CONSUMER_SECRET="..."
+NETSUITE_TOKEN_ID="..."
+NETSUITE_TOKEN_SECRET="..."
+NETSUITE_RESTLET_URL="https://..."
+
+# LLM Providers (at least one required)
+ANTHROPIC_API_KEY="sk-ant-..."  # For Claude (SOD analysis)
+OPENAI_API_KEY="sk-..."         # For embeddings (knowledge base)
+```
+
+---
+
+## 🚀 Deployment
+
+### Production Checklist
+
+- [ ] Environment variables set in production environment
+- [ ] Database migrations applied (`alembic upgrade head`)
+- [ ] PostgreSQL has pgvector extension installed
+- [ ] NetSuite credentials validated
+- [ ] LLM API keys validated
+- [ ] Firewall allows port 8080 access
+- [ ] Log rotation configured for `/tmp/mcp_server.log`
+- [ ] Monitoring alerts set up (use `check_mcp_status.sh`)
+- [ ] Backup strategy for PostgreSQL database
+- [ ] Documentation reviewed by operations team
+
+### Running in Production
+
+```bash
+# Use systemd service (recommended)
+# Create /etc/systemd/system/mcp-server.service
+[Unit]
+Description=MCP Compliance Server
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=mcp-user
+WorkingDirectory=/opt/compliance-agent
+Environment="PATH=/usr/bin:/usr/local/bin"
+EnvironmentFile=/opt/compliance-agent/.env
+ExecStart=/usr/bin/python3 -m mcp.mcp_server
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+
+# Enable and start
+sudo systemctl enable mcp-server
+sudo systemctl start mcp-server
+sudo systemctl status mcp-server
+```
+
+---
+
+## 📞 Support & Resources
+
+### Internal Resources
+
+- **Documentation**: `docs/` directory
+- **Issue Tracker**: `docs/LESSONS_LEARNED.md` (15 documented issues)
+- **Architecture**: `docs/ARCHITECTURE.md`
+- **Operations**: `docs/MCP_SERVER_MANAGEMENT.md`
+
+### External Resources
+
+- **Model Context Protocol**: https://modelcontextprotocol.io
+- **FastAPI Docs**: https://fastapi.tiangolo.com
+- **SQLAlchemy Docs**: https://docs.sqlalchemy.org
+- **Claude API Docs**: https://docs.anthropic.com
+- **NetSuite SuiteScript**: https://docs.oracle.com/en/cloud/saas/netsuite
+
+### Common Questions
+
+**Q: Why is the server running on port 8080?**
+A: Default MCP server port. Change in `mcp/mcp_server.py` if needed.
+
+**Q: How often does data sync?**
+A: Full sync daily at 2:00 AM, incremental sync every hour.
+
+**Q: Can I change the SOD rules?**
+A: Yes, edit `database/seed_data/sod_rules.json` and restart server.
+
+**Q: Why Claude Opus 4.6?**
+A: Most capable model for complex compliance reasoning and context understanding.
+
+**Q: How do I add a new data source besides NetSuite?**
+A: Create new connector in `connectors/`, implement `BaseConnector` interface, register in `data_collector.py`.
+
+---
+
+## 🎯 Current Status (2026-02-12)
+
+### ✅ Completed
+
+- [x] Phase 1: Autonomous data collection (daily + hourly sync)
+- [x] Phase 2: AI-powered SOD analysis (18 rules active)
+- [x] Phase 3: pgvector knowledge base (RAG operational)
+- [x] MCP server with 11 tools
+- [x] Production-ready scripts (restart, status check)
+- [x] Comprehensive documentation (4 major docs)
+- [x] 99.7% user coverage (1,928/1,933 users synced)
+
+### 🚧 Known Issues
+
+- OpenSSL warning (urllib3 v2 with LibreSSL 2.8.3) - cosmetic, non-blocking
+- FastAPI deprecation warnings (on_event → lifespan) - non-critical
+- Optional LLM packages not installed (OpenAI, Gemini, Cohere) - features work without them
+
+### 📈 Future Enhancements
+
+See `docs/LESSONS_LEARNED.md` → Technical Debt section for full list.
+
+Priority items:
+1. Migrate FastAPI startup/shutdown to lifespan handlers
+2. Add integration tests for full sync workflow
+3. Implement log rotation for production
+4. Add Prometheus metrics for monitoring
+5. Create admin UI for rule management
+
+---
+
+## 💡 Tips for Claude Code Sessions
+
+### When Starting a New Session
+
+1. Read this file (CLAUDE.md) first
+2. Review `docs/LESSONS_LEARNED.md` for context on past issues
+3. Check current server status: `./scripts/check_mcp_status.sh`
+4. Review recent logs: `tail -50 /tmp/mcp_server.log`
+
+### Before Making Database Changes
+
+1. Check `docs/LESSONS_LEARNED.md` Issues #1, #14, #15
+2. Create Alembic migration: `alembic revision --autogenerate`
+3. Review generated SQL carefully
+4. Test migration on dev database first
+5. Backup production database before applying
+
+### Before Modifying Data Collection
+
+1. Check `docs/LESSONS_LEARNED.md` Issue #13 (NetSuite pagination)
+2. Verify page_size=200 (not 1000)
+3. Test with small dataset first
+4. Monitor sync_metadata table for errors
+5. Verify user counts match NetSuite
+
+### When Debugging
+
+1. Use `./scripts/check_mcp_status.sh` for comprehensive health check
+2. Check logs: `tail -f /tmp/mcp_server.log`
+3. Query database: `psql $DATABASE_URL`
+4. Review relevant documentation in `docs/`
+5. Check if issue is documented in LESSONS_LEARNED.md
+
+---
+
+**Version History:**
+- v1.0 (2026-02-12): Initial comprehensive guide
+
+**Maintained by:** AI Development Team
+**Last Verified:** 2026-02-12

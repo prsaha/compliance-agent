@@ -6,6 +6,7 @@ Each tool represents a capability that Claude can invoke via MCP protocol.
 from typing import List, Dict, Any, Optional
 import logging
 import asyncio
+import os
 from functools import lru_cache
 from .orchestrator import ComplianceOrchestrator
 
@@ -60,7 +61,7 @@ TOOL_SCHEMAS = {
     },
 
     "get_user_violations": {
-        "description": "Get detailed violation information for a specific user, including AI-powered risk analysis",
+        "description": "Get SOD violations for a specific USER (cross-role conflicts from multiple roles assigned to same user). Use this to check if a PERSON has conflicting role combinations. NOT for analyzing whether a ROLE itself is safe - use get_role_conflicts or analyze_role_permissions for that. Includes AI-powered risk analysis and recommendations.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -160,6 +161,338 @@ TOOL_SCHEMAS = {
             },
             "required": []
         }
+    },
+
+    "start_collection_agent": {
+        "description": "Start the autonomous data collection agent that syncs user/role/permission data from external systems",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+
+    "stop_collection_agent": {
+        "description": "Stop the autonomous data collection agent",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+
+    "get_collection_agent_status": {
+        "description": "Get current status of the autonomous collection agent, including recent sync history and statistics",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "system_name": {
+                    "type": "string",
+                    "description": "Optional system filter (default: all systems)"
+                }
+            },
+            "required": []
+        }
+    },
+
+    "trigger_manual_sync": {
+        "description": "Manually trigger a data sync from an external system to update user/role/permission data",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "system_name": {
+                    "type": "string",
+                    "description": "System to sync",
+                    "enum": ["netsuite", "okta", "salesforce"],
+                    "default": "netsuite"
+                },
+                "sync_type": {
+                    "type": "string",
+                    "description": "Type of sync to perform",
+                    "enum": ["full", "incremental"],
+                    "default": "full"
+                }
+            },
+            "required": []
+        }
+    },
+
+    "list_all_users": {
+        "description": "Get a complete list of all active users in a system with their roles and basic information",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "system_name": {
+                    "type": "string",
+                    "description": "System to list users from",
+                    "enum": ["netsuite", "okta", "salesforce"],
+                    "default": "netsuite"
+                },
+                "include_inactive": {
+                    "type": "boolean",
+                    "description": "Include inactive users in the list",
+                    "default": False
+                },
+                "filter_by_department": {
+                    "type": "string",
+                    "description": "Optional department filter to show only users from specific department"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of users to return (default: 100, max: 500)",
+                    "default": 100
+                }
+            },
+            "required": ["system_name"]
+        }
+    },
+
+    "analyze_access_request": {
+        "description": "Analyze an access request for SOD conflicts using level-based analysis with compensating controls",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_title": {
+                    "type": "string",
+                    "description": "Job title of the user requesting access (e.g., 'Revenue Director', 'Controller')"
+                },
+                "requested_roles": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of NetSuite role names being requested (e.g., ['Fivetran - Revenue Manager', 'Fivetran - Revenue Approver'])"
+                },
+                "user_email": {
+                    "type": "string",
+                    "description": "Optional email address of the user"
+                }
+            },
+            "required": ["job_title", "requested_roles"]
+        }
+    },
+
+    "query_sod_rules": {
+        "description": "Query SOD rules from the database with optional filters",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "category1": {
+                    "type": "string",
+                    "description": "First permission category (e.g., 'transaction_entry', 'transaction_approval')"
+                },
+                "category2": {
+                    "type": "string",
+                    "description": "Second permission category to check conflicts"
+                },
+                "severity": {
+                    "type": "string",
+                    "description": "Filter by severity level",
+                    "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of rules to return",
+                    "default": 10
+                }
+            },
+            "required": []
+        }
+    },
+
+    "get_compensating_controls": {
+        "description": "Get recommended compensating controls for a specific severity level or conflict",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "severity": {
+                    "type": "string",
+                    "description": "Severity level of the conflict",
+                    "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+                },
+                "include_cost": {
+                    "type": "boolean",
+                    "description": "Include cost estimates for controls",
+                    "default": True
+                }
+            },
+            "required": ["severity"]
+        }
+    },
+
+    "validate_job_role": {
+        "description": "Validate if a role combination is typical for a specific job title",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_title": {
+                    "type": "string",
+                    "description": "Job title to validate (e.g., 'Revenue Director', 'Controller')"
+                },
+                "requested_roles": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "NetSuite roles being requested"
+                }
+            },
+            "required": ["job_title", "requested_roles"]
+        }
+    },
+
+    "check_permission_conflict": {
+        "description": "Check if two specific permissions conflict based on their levels",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "permission1_name": {
+                    "type": "string",
+                    "description": "First permission name (e.g., 'Invoice')"
+                },
+                "permission1_level": {
+                    "type": "string",
+                    "description": "Level of first permission",
+                    "enum": ["None", "View", "Create", "Edit", "Full"]
+                },
+                "permission2_name": {
+                    "type": "string",
+                    "description": "Second permission name (e.g., 'Invoice Approval')"
+                },
+                "permission2_level": {
+                    "type": "string",
+                    "description": "Level of second permission",
+                    "enum": ["None", "View", "Create", "Edit", "Full"]
+                }
+            },
+            "required": ["permission1_name", "permission1_level", "permission2_name", "permission2_level"]
+        }
+    },
+
+    "get_permission_categories": {
+        "description": "Get all permission categories and their risk scores from the database",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "include_permissions": {
+                    "type": "boolean",
+                    "description": "Include list of permissions in each category",
+                    "default": False
+                }
+            },
+            "required": []
+        }
+    },
+
+    "search_permissions": {
+        "description": "Search and filter NetSuite permissions by name, category, or risk level",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "search_term": {
+                    "type": "string",
+                    "description": "Search term to match permission names"
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Filter by permission category"
+                },
+                "risk_level": {
+                    "type": "string",
+                    "description": "Filter by risk level",
+                    "enum": ["HIGH", "MEDIUM", "LOW", "MINIMAL"]
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results",
+                    "default": 20
+                }
+            },
+            "required": []
+        }
+    },
+
+    "query_knowledge_base": {
+        "description": "Query the vector knowledge base for SOD rules, controls, and resolution strategies. IMPORTANT: Use database tools (recommend_roles_for_job_title, analyze_access_request) FIRST for role recommendations. Knowledge base is for understanding concepts, NOT for determining what roles to assign.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language query to search for (e.g., 'revenue approval conflicts', 'payment segregation controls')"
+                },
+                "doc_type": {
+                    "type": "string",
+                    "description": "Filter by document type",
+                    "enum": ["SOD_RULE", "COMPENSATING_CONTROL", "RESOLUTION_STRATEGY", "JOB_ROLE", "ALL"]
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results",
+                    "default": 5
+                }
+            },
+            "required": ["query"]
+        }
+    },
+
+    "recommend_roles_for_job_title": {
+        "description": "**PRIMARY TOOL for role recommendations** - Gets actual roles from database by analyzing what existing employees with similar job titles currently have. ALWAYS use this FIRST before recommending roles. Includes automatic SOD conflict checking. Never assume roles based on job title alone - always query actual peer data.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_title": {
+                    "type": "string",
+                    "description": "Job title of the new hire (e.g., 'Revenue Director', 'Controller', 'Sales Manager')"
+                },
+                "department": {
+                    "type": "string",
+                    "description": "Optional department filter (e.g., 'Accounting', 'Finance', 'Operations') to match peers in same department"
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["summary", "detailed"],
+                    "description": "Output format - 'summary' for brief list, 'detailed' for peer breakdown",
+                    "default": "summary"
+                }
+            },
+            "required": ["job_title"]
+        }
+    },
+
+    "analyze_role_permissions": {
+        "description": "Analyze internal SOD conflicts within a single NetSuite role (deep analysis). Performs comprehensive level-based conflict detection, identifies incompatible permissions, and generates detailed report with remediation recommendations. Use this for NEW roles not yet in knowledge base, or when you need fresh analysis. For faster results on existing roles, use get_role_conflicts instead. This analyzes the ROLE itself, not user violations. Returns summary + saves detailed analysis to file.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "role_name": {
+                    "type": "string",
+                    "description": "Name of the NetSuite role to analyze (e.g., 'Fivetran - Cash Accountant', 'Fivetran - Controller')"
+                },
+                "include_remediation_plan": {
+                    "type": "boolean",
+                    "description": "Include detailed remediation recommendations",
+                    "default": True
+                },
+                "output_format": {
+                    "type": "string",
+                    "description": "Output format for detailed report",
+                    "enum": ["markdown", "json", "both"],
+                    "default": "markdown"
+                }
+            },
+            "required": ["role_name"]
+        }
+    },
+
+    "get_role_conflicts": {
+        "description": "**PRIMARY TOOL for analyzing NetSuite ROLE conflicts** - Gets internal SOD conflicts within a single role (e.g., maker-checker violations where one role can both create AND approve transactions). This is NOT for user violations. Use this when asked to 'analyze [role name]' or 'check if [role] is safe'. Returns pre-analyzed conflict information from knowledge base including CRITICAL maker-checker violations, 3-way match bypasses, and remediation guidance. Works with role names containing special characters like 'A/P Analyst'. IMPORTANT: User having 0 violations does NOT mean the role itself is safe - always check role's internal conflicts.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "role_name": {
+                    "type": "string",
+                    "description": "Name of the NetSuite role (e.g., 'Fivetran - A/P Analyst', 'Fivetran - Controller'). Can include special characters."
+                }
+            },
+            "required": ["role_name"]
+        }
     }
 }
 
@@ -177,11 +510,9 @@ async def list_systems_handler() -> str:
     """
     try:
         logger.info("list_systems_handler called")
-        # Create orchestrator directly to debug
-        from .orchestrator import ComplianceOrchestrator
-        logger.info("Creating orchestrator directly...")
-        orchestrator = ComplianceOrchestrator()
-        logger.info("Orchestrator created, calling list_available_systems_sync")
+        # Use cached orchestrator instance
+        orchestrator = get_orchestrator()
+        logger.info("Got orchestrator, calling list_available_systems_sync")
         # Run synchronous method in thread pool
         systems = await asyncio.to_thread(orchestrator.list_available_systems_sync)
         logger.info(f"list_available_systems_sync returned {len(systems)} systems")
@@ -302,7 +633,7 @@ async def get_user_violations_handler(
                 severity_emoji = "🔴" if v['severity'] == "HIGH" else "🟡" if v['severity'] == "MEDIUM" else "🟢"
                 output += f"{i}. {severity_emoji} **{v['severity']}**: {v['rule_name']}\n"
                 output += f"   • Description: {v['description']}\n"
-                output += f"   • Risk: {v['risk_description']}\n"
+                output += f"   • Risk Score: {v['risk_score']:.1f}/100\n"
                 output += f"   • Status: {v['status']}\n"
                 output += f"   • Detected: {v['detected_at']}\n"
                 output += f"   • Violation ID: `{v['id']}`\n\n"
@@ -462,6 +793,1346 @@ async def get_violation_stats_handler(
         return f"❌ Error fetching statistics: {str(e)}"
 
 
+async def start_collection_agent_handler() -> str:
+    """
+    Start the autonomous collection agent
+
+    Returns:
+        Formatted string with status
+    """
+    try:
+        logger.info("Starting autonomous collection agent")
+
+        from agents.data_collector import get_collection_agent
+
+        # Run synchronous method in thread pool
+        agent = await asyncio.to_thread(get_collection_agent)
+
+        if agent.is_running:
+            return "⚠️  **Collection Agent Already Running**\n\nThe autonomous collection agent is already running.\nUse `get_collection_agent_status` to check its status."
+
+        await asyncio.to_thread(agent.start)
+
+        output = "✅ **Autonomous Collection Agent Started**\n\n"
+        output += "📅 **Scheduled Jobs:**\n"
+        output += "   • Full sync: Daily at 2:00 AM\n"
+        output += "   • Incremental sync: Every hour\n\n"
+        output += "The agent will run in the background and keep data synchronized.\n"
+        output += "Use `get_collection_agent_status` to monitor sync progress."
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in start_collection_agent_handler: {str(e)}", exc_info=True)
+        return f"❌ Error starting collection agent: {str(e)}"
+
+
+async def stop_collection_agent_handler() -> str:
+    """
+    Stop the autonomous collection agent
+
+    Returns:
+        Formatted string with status
+    """
+    try:
+        logger.info("Stopping autonomous collection agent")
+
+        from agents.data_collector import get_collection_agent
+
+        # Run synchronous method in thread pool
+        agent = await asyncio.to_thread(get_collection_agent)
+
+        if not agent.is_running:
+            return "⚠️  **Collection Agent Not Running**\n\nThe autonomous collection agent is not currently running."
+
+        await asyncio.to_thread(agent.stop)
+
+        output = "✅ **Autonomous Collection Agent Stopped**\n\n"
+        output += "The agent has been stopped. Scheduled syncs will not run.\n"
+        output += "Use `start_collection_agent` to restart it."
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in stop_collection_agent_handler: {str(e)}", exc_info=True)
+        return f"❌ Error stopping collection agent: {str(e)}"
+
+
+async def get_collection_agent_status_handler(system_name: Optional[str] = None) -> str:
+    """
+    Get collection agent status
+
+    Returns:
+        Formatted string with status
+    """
+    try:
+        logger.info("Fetching collection agent status")
+
+        from agents.data_collector import get_collection_agent
+
+        # Run synchronous method in thread pool
+        agent = await asyncio.to_thread(get_collection_agent)
+        status = await asyncio.to_thread(agent.get_sync_status, system_name)
+
+        # Format response
+        output = "📊 **Autonomous Collection Agent Status**\n\n"
+
+        # Agent running status
+        if status['is_running']:
+            output += "🟢 **Status:** Running\n"
+        else:
+            output += "🔴 **Status:** Stopped\n"
+        output += "\n"
+
+        # Last successful sync
+        if status['last_successful_sync']:
+            last = status['last_successful_sync']
+            output += "✅ **Last Successful Sync:**\n"
+            output += f"   • Completed: {last['completed_at']}\n"
+            if last['duration']:
+                output += f"   • Duration: {last['duration']:.2f}s\n"
+            output += f"   • Users Synced: {last['users_synced']}\n"
+            output += "\n"
+        else:
+            output += "**Last Successful Sync:** None\n\n"
+
+        # Recent syncs
+        if status['recent_syncs']:
+            output += f"📜 **Recent Syncs (Last {min(5, len(status['recent_syncs']))}):**\n"
+            for sync in status['recent_syncs'][:5]:
+                status_emoji = {
+                    'success': '✅',
+                    'failed': '❌',
+                    'running': '🔄',
+                    'pending': '⏳'
+                }.get(sync['status'], '❓')
+
+                output += f"{status_emoji} {sync['started_at']} - {sync['type'].upper()} - {sync['status'].upper()}\n"
+                if sync['duration']:
+                    output += f"   └─ Duration: {sync['duration']:.2f}s, Users: {sync['users_synced']}\n"
+            output += "\n"
+
+        # 7-day statistics
+        if status['statistics_7d']:
+            stats = status['statistics_7d']
+            output += "📈 **7-Day Statistics:**\n"
+            output += f"   • Total Syncs: {stats['total_syncs']}\n"
+            output += f"   • Success Rate: {stats['success_rate']:.1f}%\n"
+            output += f"   • Avg Duration: {stats['avg_duration']:.2f}s\n"
+            output += f"   • Users Synced: {stats['total_users_synced']}\n"
+            output += f"   • Roles Synced: {stats['total_roles_synced']}\n"
+            output += f"   • Violations Detected: {stats['total_violations_detected']}\n"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in get_collection_agent_status_handler: {str(e)}", exc_info=True)
+        return f"❌ Error fetching agent status: {str(e)}"
+
+
+async def trigger_manual_sync_handler(
+    system_name: str = "netsuite",
+    sync_type: str = "full"
+) -> str:
+    """
+    Trigger manual sync
+
+    Returns:
+        Formatted string with sync results
+    """
+    try:
+        logger.info(f"Triggering manual sync: {system_name}, {sync_type}")
+
+        from agents.data_collector import get_collection_agent
+
+        # Run synchronous method in thread pool
+        agent = await asyncio.to_thread(get_collection_agent)
+        result = await asyncio.to_thread(agent.manual_sync, system_name, sync_type)
+
+        if result['success']:
+            output = "✅ **Sync Completed Successfully**\n\n"
+            output += f"🆔 Sync ID: `{result['sync_id']}`\n"
+            output += f"⏱️  Duration: {result['duration']:.2f}s\n"
+            output += f"👥 Users Fetched: {result['users_fetched']}\n"
+            output += f"💾 Users Synced: {result['users_synced']}\n"
+            output += f"🎭 Roles Synced: {result['roles_synced']}\n"
+            output += f"⚠️  Violations Detected: {result['violations_detected']}\n\n"
+            output += "ℹ️  _Use `get_violation_stats` to see detailed violation statistics._"
+            return output
+        else:
+            return f"❌ **Sync Failed**\n\nError: {result.get('error', 'Unknown error')}"
+
+    except Exception as e:
+        logger.error(f"Error in trigger_manual_sync_handler: {str(e)}", exc_info=True)
+        return f"❌ Error triggering sync: {str(e)}"
+
+
+async def list_all_users_handler(
+    system_name: str = "netsuite",
+    include_inactive: bool = False,
+    filter_by_department: Optional[str] = None,
+    limit: int = 100
+) -> str:
+    """
+    List all users with their roles
+
+    Returns:
+        Formatted string with user list
+    """
+    try:
+        logger.info(f"Listing all users from {system_name}")
+
+        orchestrator = get_orchestrator()
+        # Run synchronous method in thread pool
+        result = await asyncio.to_thread(
+            orchestrator.list_all_users_sync,
+            system_name=system_name,
+            include_inactive=include_inactive,
+            filter_by_department=filter_by_department,
+            limit=limit
+        )
+
+        # Format response
+        output = f"**User List - {result['system_name'].upper()}**\n\n"
+        output += f"📊 **Summary:**\n"
+        output += f"   • Total Users: {result['total_users']:,}\n"
+        output += f"   • Active Users: {result['active_users']:,}\n"
+        if result.get('inactive_users'):
+            output += f"   • Inactive Users: {result['inactive_users']:,}\n"
+        if filter_by_department:
+            output += f"   • Department Filter: {filter_by_department}\n"
+        output += f"   • Showing: {len(result['users'])} users\n\n"
+
+        if result['users']:
+            output += "👥 **Users:**\n\n"
+            for i, user in enumerate(result['users'], 1):
+                status_emoji = "✅" if user['is_active'] else "❌"
+                output += f"{i}. {status_emoji} **{user['name']}** ({user['email']})\n"
+                output += f"   └─ Roles: {user['role_count']} | "
+                if user.get('department'):
+                    output += f"Department: {user['department']} | "
+                output += f"Violations: {user.get('violation_count', 0)}\n"
+
+                if i >= limit:
+                    remaining = result['total_users'] - i
+                    if remaining > 0:
+                        output += f"\n_...and {remaining} more users_\n"
+                    break
+        else:
+            output += "No users found.\n"
+
+        output += f"\nℹ️  _Use `get_user_violations` to see details for specific users._"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in list_all_users_handler: {str(e)}", exc_info=True)
+        return f"❌ Error listing users: {str(e)}"
+
+
+async def analyze_access_request_handler(
+    job_title: str,
+    requested_roles: List[str],
+    user_email: Optional[str] = None
+) -> str:
+    """
+    Analyze access request with level-based SOD analysis
+
+    Returns:
+        Formatted string with analysis results
+    """
+    try:
+        logger.info(f"Analyzing access request for {job_title}: {requested_roles}")
+
+        import subprocess
+        import json
+        import tempfile
+
+        # Prepare command
+        roles_arg = ",".join(requested_roles)
+        cmd = [
+            "python3",
+            "scripts/analyze_access_request_with_levels.py",
+            "--job-title", job_title,
+            "--requested-roles", roles_arg,
+            "--mode", "single-request"
+        ]
+
+        # Run analysis
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+        if result.returncode != 0:
+            return f"❌ **Analysis Failed**\n\nError: {result.stderr}"
+
+        # Read JSON output from file (script writes to output/access_request_analysis.json)
+        try:
+            from pathlib import Path
+            output_file = Path("output/access_request_analysis.json")
+            if not output_file.exists():
+                return f"❌ **Analysis Failed**\n\nOutput file not found: {output_file}"
+
+            with open(output_file, 'r') as f:
+                analysis = json.load(f)
+
+        except json.JSONDecodeError as e:
+            return f"❌ **Analysis Failed**\n\nCould not parse JSON output: {str(e)}"
+        except Exception as e:
+            return f"❌ **Analysis Failed**\n\nError reading output file: {str(e)}"
+
+        # Format response
+        output = f"**Access Request Analysis: {job_title}**\n\n"
+        output += f"📋 **Requested Roles** ({len(requested_roles)}):\n"
+        for role in requested_roles:
+            output += f"   • {role}\n"
+        output += "\n"
+
+        # Overall recommendation
+        recommendation = analysis.get('overall_recommendation', 'UNKNOWN')
+        risk = analysis.get('overall_risk', 'UNKNOWN')
+        conflicts_found = analysis.get('conflicts_found', 0)
+
+        risk_emoji = {
+            'CRITICAL': '🔴',
+            'HIGH': '🟠',
+            'MEDIUM': '🟡',
+            'LOW': '🟢'
+        }.get(risk, '⚪')
+
+        output += f"**Overall Assessment:**\n"
+        output += f"   • Conflicts Found: {conflicts_found}\n"
+        output += f"   • Risk Level: {risk_emoji} {risk}\n"
+        output += f"   • Recommendation: **{recommendation}**\n\n"
+
+        # Job role validation
+        if 'job_role_validation' in analysis:
+            validation = analysis['job_role_validation']
+            output += f"**Job Role Validation:**\n"
+            output += f"   • Is Typical Combination: {'✅ Yes' if validation.get('is_typical_combination') else '❌ No'}\n"
+            output += f"   • Requires Controls: {'⚠️  Yes' if validation.get('requires_compensating_controls') else '✅ No'}\n"
+            if validation.get('business_justification'):
+                output += f"   • Justification: {validation['business_justification'][:200]}...\n"
+            output += "\n"
+
+        # Conflicts
+        if analysis.get('conflicts'):
+            output += f"**Detected Conflicts** ({len(analysis['conflicts'])}):\n\n"
+            for i, conflict in enumerate(analysis['conflicts'][:5], 1):
+                severity = conflict.get('severity', 'UNKNOWN')
+                sev_emoji = {'CRIT': '🔴', 'HIGH': '🟠', 'MED': '🟡', 'LOW': '🟢'}.get(severity, '⚪')
+
+                output += f"{i}. {sev_emoji} **{severity}** - {conflict.get('principle', 'Unknown principle')}\n"
+                output += f"   • {conflict.get('permission1', 'Unknown')} ({conflict.get('permission1_level', '?')})\n"
+                output += f"   • {conflict.get('permission2', 'Unknown')} ({conflict.get('permission2_level', '?')})\n"
+                output += f"   • Inherent Risk: {conflict.get('inherent_risk', 0):.1f}/100\n"
+                output += "\n"
+
+            if len(analysis['conflicts']) > 5:
+                output += f"_...and {len(analysis['conflicts']) - 5} more conflicts_\n\n"
+
+        # Resolutions
+        if analysis.get('resolutions'):
+            output += f"**Recommended Controls:**\n\n"
+            for i, resolution in enumerate(analysis['resolutions'][:3], 1):
+                output += f"{i}. **{resolution.get('recommended_action', 'Unknown')}**\n"
+                output += f"   • Inherent Risk: {resolution.get('inherent_risk', 0):.1f}/100\n"
+                output += f"   • Residual Risk: {resolution.get('residual_risk', 0):.1f}/100\n"
+                output += f"   • Risk Reduction: {resolution.get('risk_reduction_percentage', 0)}%\n"
+
+                if resolution.get('control_package'):
+                    pkg = resolution['control_package']
+                    output += f"   • Package: {pkg.get('package_name', 'Unknown')}\n"
+                    output += f"   • Annual Cost: {pkg.get('estimated_annual_cost', 'N/A')}\n"
+                output += "\n"
+
+        output += "ℹ️  _Use `get_compensating_controls` to see detailed control descriptions._\n\n"
+        output += "⚠️  **Cost Disclaimer:** Annual cost estimates are approximate and vary by organization size (50%-200% of shown values). "
+        output += "Costs include system configuration, monitoring tools, staff review time, and audit costs. "
+        output += "Excludes NetSuite base subscription and existing staff salaries."
+
+        return output
+
+    except subprocess.TimeoutExpired:
+        return "❌ **Analysis Timeout**\n\nThe analysis took too long to complete."
+    except Exception as e:
+        logger.error(f"Error in analyze_access_request_handler: {str(e)}", exc_info=True)
+        return f"❌ Error analyzing access request: {str(e)}"
+
+
+async def query_sod_rules_handler(
+    category1: Optional[str] = None,
+    category2: Optional[str] = None,
+    severity: Optional[str] = None,
+    limit: int = 10
+) -> str:
+    """
+    Query SOD rules from database
+
+    Returns:
+        Formatted string with SOD rules
+    """
+    try:
+        logger.info(f"Querying SOD rules: cat1={category1}, cat2={category2}, sev={severity}")
+
+        import psycopg2
+        import json
+
+        conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+        cursor = conn.cursor()
+
+        # Build query
+        query = """
+            SELECT rule_id, rule_name, principle, category1, category2,
+                   base_risk_score, severity, description
+            FROM sod_rules
+            WHERE is_active = true
+        """
+        params = []
+
+        if category1:
+            query += " AND category1 = %s"
+            params.append(category1)
+
+        if category2:
+            query += " AND category2 = %s"
+            params.append(category2)
+
+        if severity:
+            query += " AND severity = %s"
+            params.append(severity)
+
+        query += f" LIMIT {limit}"
+
+        cursor.execute(query, params)
+        rules = cursor.fetchall()
+        conn.close()
+
+        if not rules:
+            return "No SOD rules found matching the criteria."
+
+        output = f"**SOD Rules** ({len(rules)} found):\n\n"
+
+        for rule in rules:
+            rule_id, name, principle, cat1, cat2, risk, sev, desc = rule
+            output += f"**{rule_id}**: {name}\n"
+            output += f"   • Principle: {principle}\n"
+            output += f"   • Categories: {cat1} ↔ {cat2}\n"
+            output += f"   • Severity: {sev} | Risk: {risk}/100\n"
+            if desc:
+                output += f"   • Description: {desc[:150]}...\n"
+            output += "\n"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in query_sod_rules_handler: {str(e)}", exc_info=True)
+        return f"❌ Error querying SOD rules: {str(e)}"
+
+
+async def get_compensating_controls_handler(
+    severity: str,
+    include_cost: bool = True
+) -> str:
+    """
+    Get compensating controls for severity level
+
+    Returns:
+        Formatted string with controls
+    """
+    try:
+        logger.info(f"Getting compensating controls for {severity}")
+
+        import psycopg2
+        import json
+
+        conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+        cursor = conn.cursor()
+
+        # Get control package for severity
+        cursor.execute("""
+            SELECT package_id, package_name, description,
+                   included_control_ids, total_risk_reduction,
+                   estimated_annual_cost, implementation_time_hours
+            FROM control_packages
+            WHERE severity_level = %s AND is_active = true
+            LIMIT 1
+        """, (severity,))
+
+        package = cursor.fetchone()
+
+        if not package:
+            conn.close()
+            return f"No control package found for severity: {severity}"
+
+        pkg_id, pkg_name, desc, control_ids, risk_reduction, cost, hours = package
+
+        output = f"**{pkg_name}** (for {severity} severity)\n\n"
+        if desc:
+            output += f"{desc}\n\n"
+        output += f"**Package Details:**\n"
+        output += f"   • Risk Reduction: {risk_reduction}%\n"
+        if include_cost:
+            output += f"   • Annual Cost: {cost}\n"
+            output += f"   • Implementation Time: {hours} hours\n"
+        output += "\n"
+
+        # Get individual controls
+        if control_ids:
+            placeholders = ','.join(['%s'] * len(control_ids))
+            cursor.execute(f"""
+                SELECT control_id, name, control_type, description,
+                       risk_reduction_percentage, annual_cost_estimate
+                FROM compensating_controls
+                WHERE control_id = ANY(%s) AND is_active = true
+            """, (control_ids,))
+
+            controls = cursor.fetchall()
+
+            if controls:
+                output += f"**Included Controls** ({len(controls)}):\n\n"
+                for ctrl in controls:
+                    ctrl_id, name, ctrl_type, ctrl_desc, reduction, ctrl_cost = ctrl
+                    output += f"• **{name}** ({ctrl_type})\n"
+                    output += f"  └─ Risk Reduction: {reduction}%"
+                    if include_cost:
+                        output += f" | Cost: {ctrl_cost}"
+                    output += "\n"
+                    if ctrl_desc:
+                        output += f"  └─ {ctrl_desc[:120]}...\n"
+                    output += "\n"
+
+        conn.close()
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in get_compensating_controls_handler: {str(e)}", exc_info=True)
+        return f"❌ Error getting compensating controls: {str(e)}"
+
+
+async def validate_job_role_handler(
+    job_title: str,
+    requested_roles: List[str]
+) -> str:
+    """
+    Validate job role combination
+
+    Returns:
+        Formatted string with validation results
+    """
+    try:
+        logger.info(f"Validating job role: {job_title}")
+
+        import psycopg2
+        import json
+
+        conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+        cursor = conn.cursor()
+
+        # Search for job role by title (case-insensitive)
+        cursor.execute("""
+            SELECT job_role_id, job_title, department,
+                   typical_netsuite_roles, acceptable_role_combinations,
+                   typical_resolution_strategy, typical_required_controls,
+                   business_justification
+            FROM job_role_mappings
+            WHERE LOWER(job_title) = LOWER(%s) AND is_active = true
+            LIMIT 1
+        """, (job_title,))
+
+        role_mapping = cursor.fetchone()
+        conn.close()
+
+        if not role_mapping:
+            return f"❌ **Job Role Not Found**\n\nNo mapping found for job title: {job_title}\n\nℹ️  Use `get_permission_categories` to see available job roles."
+
+        role_id, title, dept, typical, acceptable, strategy, controls, justification = role_mapping
+
+        output = f"**Job Role Validation: {title}**\n\n"
+        if dept:
+            output += f"📁 Department: {dept}\n\n"
+
+        # Check if requested roles match typical roles
+        typical_role_names = [r.get('role', '') for r in typical] if isinstance(typical, list) else []
+
+        matches = [r for r in requested_roles if r in typical_role_names]
+
+        output += f"**Requested Roles Analysis:**\n"
+        output += f"   • Roles Requested: {len(requested_roles)}\n"
+        output += f"   • Typical for Role: {len(matches)}/{len(requested_roles)}\n"
+        output += f"   • Resolution Strategy: {strategy}\n\n"
+
+        # Show typical roles
+        if typical_role_names:
+            output += f"**Typical Roles for {title}:**\n"
+            for role_name in typical_role_names[:5]:
+                match_emoji = "✅" if role_name in requested_roles else "○"
+                output += f"   {match_emoji} {role_name}\n"
+            output += "\n"
+
+        # Required controls
+        if controls and len(controls) > 0:
+            output += f"**Typically Required Controls:**\n"
+            for ctrl in controls[:5]:
+                output += f"   • {ctrl}\n"
+            output += "\n"
+
+        # Business justification
+        if justification:
+            output += f"**Business Justification:**\n"
+            output += f"{justification[:300]}...\n\n"
+
+        # Recommendation
+        if len(matches) == len(requested_roles):
+            output += "✅ **Recommendation**: APPROVE - This is a typical combination for this job role."
+        elif len(matches) > 0:
+            output += "⚠️  **Recommendation**: REVIEW - Some roles are typical, but additional roles may require justification."
+        else:
+            output += "❌ **Recommendation**: REVIEW REQUIRED - This is not a typical combination for this job role."
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in validate_job_role_handler: {str(e)}", exc_info=True)
+        return f"❌ Error validating job role: {str(e)}"
+
+
+async def check_permission_conflict_handler(
+    permission1_name: str,
+    permission1_level: str,
+    permission2_name: str,
+    permission2_level: str
+) -> str:
+    """
+    Check if two permissions conflict
+
+    Returns:
+        Formatted string with conflict analysis
+    """
+    try:
+        logger.info(f"Checking conflict: {permission1_name}({permission1_level}) vs {permission2_name}({permission2_level})")
+
+        # Convert level names to values
+        level_map = {'None': 0, 'View': 1, 'Create': 2, 'Edit': 3, 'Full': 4}
+        level1 = level_map.get(permission1_level, 0)
+        level2 = level_map.get(permission2_level, 0)
+
+        # Use level-based conflict matrix
+        severity_matrix = [
+            ['OK',   'OK',   'OK',   'OK',   'OK'  ],
+            ['OK',   'OK',   'LOW',  'LOW',  'MED' ],
+            ['OK',   'LOW',  'MED',  'HIGH', 'CRIT'],
+            ['OK',   'LOW',  'HIGH', 'CRIT', 'CRIT'],
+            ['OK',   'MED',  'CRIT', 'CRIT', 'CRIT']
+        ]
+
+        severity = severity_matrix[level1][level2]
+
+        output = f"**Permission Conflict Analysis**\n\n"
+        output += f"**Permission 1**: {permission1_name} ({permission1_level}, level {level1})\n"
+        output += f"**Permission 2**: {permission2_name} ({permission2_level}, level {level2})\n\n"
+
+        severity_emoji = {'OK': '✅', 'LOW': '🟢', 'MED': '🟡', 'HIGH': '🟠', 'CRIT': '🔴'}.get(severity, '⚪')
+
+        output += f"**Conflict Severity**: {severity_emoji} **{severity}**\n\n"
+
+        # Explanation
+        if severity == 'OK':
+            output += "✅ No conflict - This combination is permissible without additional controls."
+        elif severity == 'LOW':
+            output += "🟢 Low risk - Permissible with basic oversight (manager review, periodic audit)."
+        elif severity == 'MED':
+            output += "🟡 Medium risk - Requires compensating controls (transaction limits, dual approval)."
+        elif severity == 'HIGH':
+            output += "🟠 High risk - Requires extensive controls or level reduction."
+        elif severity == 'CRIT':
+            output += "🔴 Critical conflict - Reject or require executive override with maximum controls."
+
+        output += f"\n\nℹ️  _Use `get_compensating_controls` with severity='{severity}' to see recommended controls._"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in check_permission_conflict_handler: {str(e)}", exc_info=True)
+        return f"❌ Error checking permission conflict: {str(e)}"
+
+
+async def get_permission_categories_handler(
+    include_permissions: bool = False
+) -> str:
+    """
+    Get all permission categories
+
+    Returns:
+        Formatted string with categories
+    """
+    try:
+        logger.info("Getting permission categories")
+
+        import psycopg2
+        import json
+
+        conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT category_id, category_name, description, base_risk_score
+            FROM permission_categories
+            ORDER BY base_risk_score DESC
+        """)
+
+        categories = cursor.fetchall()
+        conn.close()
+
+        if not categories:
+            return "No permission categories found in database."
+
+        output = f"**Permission Categories** ({len(categories)}):\n\n"
+
+        for cat in categories:
+            cat_id, name, desc, risk = cat
+            output += f"• **{name}** (`{cat_id}`)\n"
+            output += f"  └─ Base Risk: {risk}/100\n"
+            if desc:
+                output += f"  └─ {desc[:100]}...\n"
+            output += "\n"
+
+        output += "\nℹ️  _Use `search_permissions` with category to see permissions in each category._"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in get_permission_categories_handler: {str(e)}", exc_info=True)
+        return f"❌ Error getting permission categories: {str(e)}"
+
+
+async def search_permissions_handler(
+    search_term: Optional[str] = None,
+    category: Optional[str] = None,
+    risk_level: Optional[str] = None,
+    limit: int = 20
+) -> str:
+    """
+    Search permissions
+
+    Returns:
+        Formatted string with search results
+    """
+    try:
+        logger.info(f"Searching permissions: term={search_term}, cat={category}, risk={risk_level}")
+
+        import json
+        from pathlib import Path
+
+        # Load permission mapping
+        mapping_file = Path('data/netsuite_permission_mapping.json')
+        if not mapping_file.exists():
+            return "❌ Permission mapping file not found. Run `analyze_and_categorize_permissions.py` first."
+
+        with open(mapping_file, 'r') as f:
+            data = json.load(f)
+
+        permissions = data.get('permissions', {})
+
+        # Filter permissions
+        filtered = []
+        for perm_id, perm in permissions.items():
+            matches = True
+
+            if search_term:
+                if search_term.lower() not in perm['permission_name'].lower():
+                    matches = False
+
+            if category:
+                if category not in perm.get('categories', []):
+                    matches = False
+
+            if risk_level:
+                if perm.get('base_risk_level') != risk_level:
+                    matches = False
+
+            if matches:
+                filtered.append(perm)
+
+        # Sort by usage count
+        filtered.sort(key=lambda x: x.get('usage_count', 0), reverse=True)
+        filtered = filtered[:limit]
+
+        if not filtered:
+            return "No permissions found matching the criteria."
+
+        output = f"**Permission Search Results** ({len(filtered)} found):\n\n"
+
+        for perm in filtered:
+            output += f"• **{perm['permission_name']}** (`{perm['permission_id']}`)\n"
+            output += f"  └─ Categories: {', '.join(perm.get('categories', []))}\n"
+            output += f"  └─ Risk: {perm.get('base_risk_level', 'UNKNOWN')}\n"
+            output += f"  └─ Levels: {', '.join(perm.get('levels_granted', []))}\n"
+            output += f"  └─ Used by: {perm.get('usage_count', 0)} roles\n"
+            output += "\n"
+
+        if len(permissions) > limit:
+            output += f"_Showing {limit} of {len(permissions)} total results_\n"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in search_permissions_handler: {str(e)}", exc_info=True)
+        return f"❌ Error searching permissions: {str(e)}"
+
+
+async def query_knowledge_base_handler(
+    query: str,
+    doc_type: str = "ALL",
+    limit: int = 5
+) -> str:
+    """
+    Query vector knowledge base using semantic search
+
+    This grounds the analysis in actual compliance data from the vector database
+    before generating recommendations.
+
+    Returns:
+        Formatted string with relevant knowledge base documents
+    """
+    try:
+        logger.info(f"Querying knowledge base: query='{query}', type={doc_type}, limit={limit}")
+
+        import psycopg2
+        from sentence_transformers import SentenceTransformer
+        import json
+
+        # Load embedding model
+        model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+
+        # Generate query embedding
+        query_embedding = model.encode(query).tolist()
+
+        # Connect to database
+        conn = psycopg2.connect(
+            "postgresql://compliance_user:compliance_pass@localhost:5432/compliance_db"
+        )
+        cursor = conn.cursor()
+
+        # Build query with optional doc_type filter
+        sql = """
+            SELECT
+                doc_id,
+                doc_type,
+                content,
+                metadata,
+                1 - (embedding <=> %s::vector) as similarity
+            FROM knowledge_base_documents
+        """
+        params = [query_embedding]
+
+        if doc_type != "ALL":
+            sql += " WHERE doc_type = %s"
+            params.append(doc_type)
+
+        sql += """
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+        """
+        params.extend([query_embedding, limit])
+
+        cursor.execute(sql, params)
+        results = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        if not results:
+            return f"No knowledge base documents found for query: '{query}'"
+
+        # Format output
+        output = f"**Knowledge Base Search Results** ({len(results)} found)\n"
+        output += f"Query: _{query}_\n\n"
+
+        for i, (doc_id, doc_type_val, content, metadata, similarity) in enumerate(results, 1):
+            # Parse metadata if it's JSON
+            meta_dict = json.loads(metadata) if isinstance(metadata, str) else metadata
+
+            output += f"{i}. **{doc_id}** (Similarity: {similarity:.2%})\n"
+            output += f"   • Type: {doc_type_val}\n"
+
+            # Show relevant metadata
+            if meta_dict:
+                if 'severity' in meta_dict:
+                    output += f"   • Severity: {meta_dict['severity']}\n"
+                if 'risk_score' in meta_dict:
+                    output += f"   • Risk Score: {meta_dict['risk_score']}/100\n"
+                if 'principle' in meta_dict:
+                    output += f"   • Principle: {meta_dict['principle']}\n"
+
+            # Show content preview
+            content_preview = content[:200] + "..." if len(content) > 200 else content
+            output += f"   • Content: {content_preview}\n"
+            output += "\n"
+
+        output += "\nℹ️  _These results are retrieved from the pgvector knowledge base and should be used to ground compliance recommendations._"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in query_knowledge_base_handler: {str(e)}", exc_info=True)
+        return f"❌ Error querying knowledge base: {str(e)}"
+
+
+async def recommend_roles_for_job_title_handler(
+    job_title: str,
+    department: str = None,
+    format: str = "summary"
+) -> str:
+    """
+    Recommend roles based on what existing employees with similar job titles have
+
+    Args:
+        job_title: Job title of new hire
+        department: Optional department filter
+        format: 'summary' or 'detailed'
+
+    Returns:
+        Formatted recommendations based on peer analysis
+    """
+    try:
+        logger.info(f"Getting role recommendations for job title: {job_title}, department: {department}")
+
+        from models.database_config import DatabaseConfig
+        from services.role_recommendation_service import RoleRecommendationService
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+
+        service = RoleRecommendationService(session)
+        result = service.recommend_roles_by_job_title(job_title, department=department)
+
+        if not result['success']:
+            return f"❌ {result['message']}"
+
+        # Check how many peers actually have roles
+        peers_with_roles = sum(1 for p in result['peer_details'] if p['role_count'] > 0)
+        peers_without_roles = result['peers_analyzed'] - peers_with_roles
+
+        # Format output - COMPACT without names
+        dept_filter = f" in {department}" if department else ""
+        output = f"**{job_title}{dept_filter}**\n\n"
+
+        output += f"📊 **Peer Analysis:**\n"
+        output += f"   • {result['peers_analyzed']} peer(s) found\n"
+        output += f"   • {peers_with_roles} with roles, {peers_without_roles} without\n"
+
+        # Warn if sample size is too small
+        if peers_with_roles == 0:
+            output += f"\n❌ No peers with roles assigned.\n"
+            output += f"Use `analyze_access_request` to test role combinations.\n"
+            return output
+        elif peers_with_roles < 2:
+            output += f"\n⚠️ Limited data ({peers_with_roles} peer with roles)\n"
+
+        # Show roles
+        if result['recommended_roles']:
+            output += f"\n**Recommended Roles** (from peers):\n"
+            for rec in result['recommended_roles']:
+                output += f"• {rec['role_name']}\n"
+
+        # Show conflict warning if exists
+        if result.get('conflict_analysis') and result['conflict_analysis'].get('has_conflicts'):
+            conflict = result['conflict_analysis']
+            risk_emoji = "🔴" if conflict.get('risk_level') == 'HIGH' else "🟠" if conflict.get('risk_level') == 'MEDIUM' else "🟡"
+            if conflict.get('conflict_count'):
+                output += f"\n{risk_emoji} **{conflict['conflict_count']} SOD conflicts** ({conflict.get('risk_level', 'UNKNOWN')} risk)\n"
+            output += f"Requires compensating controls. Use `analyze_access_request` for details.\n"
+        else:
+            output += f"\n✅ No significant conflicts detected\n"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in recommend_roles_for_job_title_handler: {str(e)}", exc_info=True)
+        return f"❌ Error getting role recommendations: {str(e)}"
+
+
+async def analyze_role_permissions_handler(
+    role_name: str,
+    include_remediation_plan: bool = True,
+    output_format: str = "markdown"
+) -> str:
+    """
+    Analyze internal SOD conflicts within a single role
+
+    This generates a comprehensive report with:
+    - Conflict analysis (CRITICAL/HIGH/MEDIUM)
+    - Permission breakdown by category
+    - Level modification recommendations
+    - Remediation options
+
+    Returns summary + saves detailed report to file
+    """
+    try:
+        logger.info(f"Analyzing role: {role_name}")
+
+        import psycopg2
+        import json
+        from datetime import datetime
+        from pathlib import Path
+        from collections import defaultdict
+
+        # Get role permissions from database
+        conn = psycopg2.connect(
+            "postgresql://compliance_user:compliance_pass@localhost:5432/compliance_db"
+        )
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT role_name, permissions
+            FROM roles
+            WHERE role_name = %s
+        """, (role_name,))
+
+        result = cursor.fetchone()
+        if not result:
+            cursor.close()
+            conn.close()
+            return f"❌ Role not found: {role_name}\n\nAvailable roles can be found using list_all_users tool."
+
+        _, permissions_json = result
+        permissions = json.loads(permissions_json) if isinstance(permissions_json, str) else permissions_json
+
+        cursor.close()
+        conn.close()
+
+        # Load permission mapping
+        perm_mapping_path = Path('data/netsuite_permission_mapping.json')
+        if not perm_mapping_path.exists():
+            return f"❌ Permission mapping file not found. Run analyze_and_categorize_permissions.py first."
+
+        with open(perm_mapping_path, 'r') as f:
+            perm_mapping = json.load(f)['permissions']
+
+        # Level values
+        LEVEL_MAP = {
+            'None': 0,
+            'View': 1,
+            'Create': 2,
+            'Edit': 3,
+            'Full': 4
+        }
+
+        # Conflict matrix
+        CONFLICT_MATRIX = [
+            ['OK',   'OK',   'OK',   'OK',   'OK'  ],
+            ['OK',   'OK',   'LOW',  'LOW',  'MED' ],
+            ['OK',   'LOW',  'MED',  'HIGH', 'CRIT'],
+            ['OK',   'LOW',  'HIGH', 'CRIT', 'CRIT'],
+            ['OK',   'MED',  'CRIT', 'CRIT', 'CRIT']
+        ]
+
+        # Categorize permissions
+        categorized_perms = []
+        for perm in permissions:
+            perm_id = perm['permission']
+            perm_name = perm['permission_name']
+            level = perm['level']
+            level_value = LEVEL_MAP.get(level, 0)
+
+            if perm_id in perm_mapping:
+                categories = perm_mapping[perm_id].get('categories', [])
+                risk = perm_mapping[perm_id].get('base_risk_level', 'UNKNOWN')
+            else:
+                categories = []
+                risk = 'UNKNOWN'
+
+            categorized_perms.append({
+                'id': perm_id,
+                'name': perm_name,
+                'level': level,
+                'level_value': level_value,
+                'categories': categories,
+                'risk': risk
+            })
+
+        # Find conflicts
+        conflicts = []
+        by_category = defaultdict(list)
+        for perm in categorized_perms:
+            for cat in perm['categories']:
+                by_category[cat].append(perm)
+
+        # SOD category pairs to check
+        SOD_CATEGORY_PAIRS = [
+            ('transaction_entry', 'transaction_approval'),
+            ('transaction_entry', 'transaction_payment'),
+            ('transaction_payment', 'bank_reconciliation'),
+            ('vendor_setup', 'transaction_payment'),
+            ('user_admin', 'transaction_entry'),
+            ('user_admin', 'transaction_approval'),
+            ('role_admin', 'transaction_entry')
+        ]
+
+        for cat1, cat2 in SOD_CATEGORY_PAIRS:
+            perms1 = by_category.get(cat1, [])
+            perms2 = by_category.get(cat2, [])
+
+            for p1 in perms1:
+                for p2 in perms2:
+                    if p1['id'] != p2['id']:
+                        severity = CONFLICT_MATRIX[p1['level_value']][p2['level_value']]
+
+                        if severity in ['MED', 'HIGH', 'CRIT']:
+                            conflicts.append({
+                                'perm1': p1,
+                                'perm2': p2,
+                                'severity': severity,
+                                'categories': f"{cat1} ↔ {cat2}"
+                            })
+
+        # Sort by severity
+        severity_order = {'CRIT': 3, 'HIGH': 2, 'MED': 1}
+        conflicts.sort(key=lambda x: severity_order.get(x['severity'], 0), reverse=True)
+
+        # Count by severity
+        by_sev = defaultdict(list)
+        for c in conflicts:
+            by_sev[c['severity']].append(c)
+
+        # Generate detailed report file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_role_name = role_name.replace(' ', '_').replace('-', '_')
+
+        output_dir = Path('output/role_analysis')
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        report_path = output_dir / f"{safe_role_name}_{timestamp}.md"
+
+        # Generate comprehensive markdown report
+        with open(report_path, 'w') as f:
+            f.write(f"# {role_name} - Internal SOD Conflict Analysis\n\n")
+            f.write(f"**Analysis Date**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"**Total Permissions**: {len(permissions)}\n")
+            f.write(f"**Categorized Permissions**: {len([p for p in categorized_perms if p['categories']])}\n")
+            f.write(f"**Internal Conflicts Found**: {len(conflicts)}\n\n")
+            f.write(f"---\n\n")
+
+            # Executive Summary
+            f.write(f"## Executive Summary\n\n")
+
+            if conflicts:
+                f.write(f"### Risk Assessment\n\n")
+                f.write(f"| Severity | Count | Risk Level |\n")
+                f.write(f"|----------|-------|------------|\n")
+                f.write(f"| 🔴 CRITICAL | {len(by_sev.get('CRIT', []))} | {'Unacceptable - Immediate action required' if by_sev.get('CRIT') else 'None'} |\n")
+                f.write(f"| 🟠 HIGH | {len(by_sev.get('HIGH', []))} | {'High Risk - Remediation needed' if by_sev.get('HIGH') else 'None'} |\n")
+                f.write(f"| 🟡 MEDIUM | {len(by_sev.get('MED', []))} | {'Moderate Risk - Review recommended' if by_sev.get('MED') else 'None'} |\n")
+                f.write(f"| **Total** | **{len(conflicts)}** | **{'Role requires attention' if conflicts else 'No issues'}** |\n\n")
+
+                if by_sev.get('CRIT'):
+                    f.write(f"### ⚠️  Overall Recommendation\n\n")
+                    f.write(f"**ROLE REQUIRES REDESIGN** - {len(by_sev['CRIT'])} CRITICAL conflicts detected.\n\n")
+            else:
+                f.write(f"✅ **No internal SOD conflicts detected in this role.**\n\n")
+
+            # Detailed conflicts
+            if conflicts:
+                f.write(f"---\n\n## Detailed Conflict Analysis\n\n")
+
+                for sev in ['CRIT', 'HIGH', 'MED']:
+                    if sev in by_sev:
+                        f.write(f"### {sev} SEVERITY CONFLICTS ({len(by_sev[sev])} found)\n\n")
+
+                        for i, conflict in enumerate(by_sev[sev][:20], 1):
+                            p1 = conflict['perm1']
+                            p2 = conflict['perm2']
+
+                            f.write(f"#### Conflict #{i}\n\n")
+                            f.write(f"**{p1['name']}** ({p1['level']}, level {p1['level_value']})\n")
+                            f.write(f"↔\n")
+                            f.write(f"**{p2['name']}** ({p2['level']}, level {p2['level_value']})\n\n")
+                            f.write(f"- **Category Conflict**: {conflict['categories']}\n")
+                            f.write(f"- **Severity**: {sev}\n")
+                            f.write(f"- **Recommended Fix**: Reduce {p1['name']} to View level OR separate into different role\n\n")
+
+                        if len(by_sev[sev]) > 20:
+                            f.write(f"_... and {len(by_sev[sev]) - 20} more {sev} conflicts_\n\n")
+
+            # Permission breakdown
+            f.write(f"---\n\n## Permission Breakdown by Category\n\n")
+
+            for cat in sorted(by_category.keys()):
+                perms = by_category[cat]
+                f.write(f"### {cat.upper().replace('_', ' ')} ({len(perms)} permissions)\n\n")
+                f.write(f"| Permission | Level | Risk |\n")
+                f.write(f"|------------|-------|------|\n")
+
+                for p in perms[:30]:
+                    risk_icon = '🔴' if p['risk'] == 'HIGH' else '🟡' if p['risk'] == 'MEDIUM' else '🟢'
+                    f.write(f"| {p['name']} | {p['level']} | {risk_icon} {p['risk']} |\n")
+
+                if len(perms) > 30:
+                    f.write(f"\n_... and {len(perms) - 30} more permissions_\n")
+                f.write(f"\n")
+
+            # Remediation recommendations
+            if include_remediation_plan and conflicts:
+                f.write(f"---\n\n## Remediation Recommendations\n\n")
+
+                # Priority level changes
+                f.write(f"### Priority 1: Critical Level Changes\n\n")
+                f.write(f"These changes will eliminate the most CRITICAL conflicts:\n\n")
+                f.write(f"| Permission | Current Level | Recommended Level | Impact |\n")
+                f.write(f"|------------|---------------|-------------------|--------|\n")
+
+                # Find permissions involved in CRIT conflicts
+                crit_perms = set()
+                for c in by_sev.get('CRIT', []):
+                    if c['perm1']['level_value'] >= 3:
+                        crit_perms.add((c['perm1']['name'], c['perm1']['level'], c['perm1']['level_value']))
+                    if c['perm2']['level_value'] >= 3:
+                        crit_perms.add((c['perm2']['name'], c['perm2']['level'], c['perm2']['level_value']))
+
+                for name, level, level_val in sorted(crit_perms, key=lambda x: x[2], reverse=True)[:10]:
+                    if level_val == 4:
+                        recommended = "Edit (3)"
+                    elif level_val == 3:
+                        recommended = "View (1)"
+                    else:
+                        recommended = level
+
+                    f.write(f"| {name} | {level} ({level_val}) | {recommended} | Reduces CRIT conflicts |\n")
+
+                f.write(f"\n")
+
+        # Generate summary for MCP response
+        summary = f"**Role Analysis Complete: {role_name}**\n\n"
+        summary += f"📊 **Analysis Summary**:\n"
+        summary += f"• Total Permissions: {len(permissions)}\n"
+        summary += f"• Total Conflicts: {len(conflicts)}\n"
+        summary += f"• 🔴 CRITICAL: {len(by_sev.get('CRIT', []))}\n"
+        summary += f"• 🟠 HIGH: {len(by_sev.get('HIGH', []))}\n"
+        summary += f"• 🟡 MEDIUM: {len(by_sev.get('MED', []))}\n\n"
+
+        if len(by_sev.get('CRIT', [])) > 0:
+            summary += f"⚠️  **CRITICAL ISSUES FOUND**\n\n"
+            summary += f"Top 5 Critical Conflicts:\n\n"
+            for i, c in enumerate(by_sev['CRIT'][:5], 1):
+                p1 = c['perm1']
+                p2 = c['perm2']
+                summary += f"{i}. **{p1['name']}** ({p1['level']}) ↔ **{p2['name']}** ({p2['level']})\n"
+                summary += f"   Category: {c['categories']}\n\n"
+        else:
+            summary += f"✅ **No critical conflicts found**\n\n"
+
+        summary += f"📄 **Detailed Report Generated**:\n"
+        summary += f"• File: `{report_path}`\n"
+        summary += f"• Format: Markdown\n"
+        summary += f"• Size: {len(conflicts)} conflicts analyzed\n\n"
+
+        if include_remediation_plan and conflicts:
+            summary += f"📋 **Remediation Options Included**:\n"
+            summary += f"• Priority level changes\n"
+            summary += f"• Permission breakdown by category\n"
+            summary += f"• Specific recommendations for each conflict\n\n"
+
+        summary += f"💡 **Next Steps**:\n"
+        summary += f"1. Review detailed report at: `{report_path}`\n"
+        summary += f"2. Implement recommended level changes\n"
+        summary += f"3. Test role functionality after changes\n"
+        summary += f"4. Re-run analysis to verify conflict resolution\n"
+
+        logger.info(f"Role analysis complete. Report saved to: {report_path}")
+
+        return summary
+
+    except Exception as e:
+        logger.error(f"Error in analyze_role_permissions_handler: {str(e)}", exc_info=True)
+        return f"❌ Error analyzing role permissions: {str(e)}"
+
+
+async def get_role_conflicts_handler(role_name: str) -> str:
+    """
+    Get pre-analyzed internal SOD conflicts for a role from knowledge base
+
+    This is faster and simpler than analyze_role_permissions as it queries
+    the pre-built knowledge base rather than analyzing from scratch.
+    """
+    try:
+        logger.info(f"Querying knowledge base for role conflicts: {role_name}")
+
+        import psycopg2
+        from sentence_transformers import SentenceTransformer
+        import json
+
+        # Load embedding model
+        model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+
+        # Generate query embedding
+        query_text = f"{role_name} internal SOD conflicts"
+        query_embedding = model.encode(query_text).tolist()
+
+        # Connect to database
+        conn = psycopg2.connect(
+            "postgresql://compliance_user:compliance_pass@localhost:5432/compliance_db"
+        )
+        cursor = conn.cursor()
+
+        # Search knowledge base for this specific role
+        cursor.execute("""
+            SELECT
+                title,
+                content,
+                metadata,
+                1 - (embedding <=> %s::vector) as similarity
+            FROM knowledge_base_documents
+            WHERE doc_type = 'role_conflict_analysis'
+              AND title ILIKE %s
+            ORDER BY similarity DESC
+            LIMIT 1
+        """, (query_embedding, f"%{role_name}%"))
+
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not result:
+            return f"""❌ No conflict analysis found for role: {role_name}
+
+This could mean:
+1. The role has not been analyzed yet
+2. The role name doesn't match exactly (try searching with query_knowledge_base)
+3. The role has no conflicts (check with analyze_role_permissions)
+
+Tip: Try using query_knowledge_base with a broader search."""
+
+        title, content, metadata_json, similarity = result
+        metadata = json.loads(metadata_json) if isinstance(metadata_json, str) else metadata_json
+
+        # Format response
+        conflict_count = metadata.get('conflict_count', 0)
+        severity_max = metadata.get('severity_max', 'UNKNOWN')
+
+        response = f"""# {title}
+
+{content}
+
+---
+
+**Data Quality**:
+- Similarity Score: {similarity:.1%}
+- Last Analysis: Pre-analyzed (2026-02-12)
+- Source: Knowledge Base
+
+**Next Steps**:
+1. Review users assigned this role
+2. Implement recommended remediations
+3. Set up compensating controls if role cannot be split immediately
+
+Use `analyze_access_request` to check if specific users have additional conflicts beyond this role's internal issues."""
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Error in get_role_conflicts_handler: {str(e)}", exc_info=True)
+        return f"❌ Error querying role conflicts: {str(e)}\n\nTry using query_knowledge_base tool instead."
+
+
 # ============================================================================
 # TOOL REGISTRY
 # ============================================================================
@@ -472,8 +2143,35 @@ TOOL_HANDLERS = {
     "get_user_violations": get_user_violations_handler,
     "remediate_violation": remediate_violation_handler,
     "schedule_review": schedule_review_handler,
-    "get_violation_stats": get_violation_stats_handler
+    "get_violation_stats": get_violation_stats_handler,
+    "start_collection_agent": start_collection_agent_handler,
+    "stop_collection_agent": stop_collection_agent_handler,
+    "get_collection_agent_status": get_collection_agent_status_handler,
+    "trigger_manual_sync": trigger_manual_sync_handler,
+    "list_all_users": list_all_users_handler,
+    "analyze_access_request": analyze_access_request_handler,
+    "query_sod_rules": query_sod_rules_handler,
+    "get_compensating_controls": get_compensating_controls_handler,
+    "validate_job_role": validate_job_role_handler,
+    "check_permission_conflict": check_permission_conflict_handler,
+    "get_permission_categories": get_permission_categories_handler,
+    "search_permissions": search_permissions_handler,
+    "query_knowledge_base": query_knowledge_base_handler,
+    "recommend_roles_for_job_title": recommend_roles_for_job_title_handler,
+    "analyze_role_permissions": analyze_role_permissions_handler,
+    "get_role_conflicts": get_role_conflicts_handler
 }
+
+
+# MCP-formatted tools list (for stdio transport)
+TOOLS = [
+    {
+        "name": tool_name,
+        "description": schema["description"],
+        "inputSchema": schema["inputSchema"]
+    }
+    for tool_name, schema in TOOL_SCHEMAS.items()
+]
 
 
 def get_tool_schema(tool_name: str) -> Optional[Dict[str, Any]]:

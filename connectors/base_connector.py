@@ -63,7 +63,8 @@ class BaseConnector(ABC):
     def sync_to_database_sync(
         self,
         users_data: List[Dict[str, Any]],
-        user_repo
+        user_repo,
+        role_repo
     ) -> List[Any]:
         """
         Sync fetched users to local database
@@ -71,6 +72,7 @@ class BaseConnector(ABC):
         Args:
             users_data: List of user dictionaries from external system
             user_repo: UserRepository instance
+            role_repo: RoleRepository instance
 
         Returns:
             List of synced User objects

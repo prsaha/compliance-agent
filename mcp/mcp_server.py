@@ -52,19 +52,21 @@ app.add_middleware(
 # ============================================================================
 
 class MCPRequest(BaseModel):
-    """MCP JSON-RPC 2.0 request"""
+    """MCP JSON-RPC 2.0 request or notification"""
     jsonrpc: str = Field(default="2.0")
     method: str
     params: Dict[str, Any] = Field(default_factory=dict)
-    id: int
+    id: Optional[int] = None  # None for notifications, int for requests
 
 
 class MCPResponse(BaseModel):
     """MCP JSON-RPC 2.0 response"""
+    model_config = {"exclude_none": True}  # Exclude None values from JSON
+
     jsonrpc: str = Field(default="2.0")
     result: Optional[Dict[str, Any]] = None
     error: Optional[Dict[str, Any]] = None
-    id: int
+    id: Optional[int] = None  # Must match request id
 
 
 class MCPError(BaseModel):
@@ -168,24 +170,31 @@ async def mcp_handler(
     logger.info(f"MCP Request: {request_data.method} (id={request_data.id})")
 
     try:
+        # Handle notifications (no id, no response expected)
+        if request_data.id is None:
+            logger.info(f"Received notification: {request_data.method} (no response needed)")
+            # For notifications, return 204 No Content
+            from fastapi.responses import Response
+            return Response(status_code=204)
+
         # Handle different MCP methods
         if request_data.method == "initialize":
-            return await handle_initialize(request_data)
+            response = await handle_initialize(request_data)
 
         elif request_data.method == "tools/list":
-            return await handle_tools_list(request_data)
+            response = await handle_tools_list(request_data)
 
         elif request_data.method == "tools/call":
-            return await handle_tools_call(request_data)
+            response = await handle_tools_call(request_data)
 
         elif request_data.method == "ping":
-            return MCPResponse(
+            response = MCPResponse(
                 id=request_data.id,
                 result={"status": "pong"}
             )
 
         else:
-            return MCPResponse(
+            response = MCPResponse(
                 id=request_data.id,
                 error={
                     "code": ErrorCode.METHOD_NOT_FOUND,
@@ -196,15 +205,19 @@ async def mcp_handler(
                 }
             )
 
+        # Return as dict with None values excluded (JSON-RPC 2.0 compliance)
+        return JSONResponse(content=response.model_dump(exclude_none=True))
+
     except Exception as e:
         logger.error(f"MCP handler error: {str(e)}", exc_info=True)
-        return MCPResponse(
+        response = MCPResponse(
             id=request_data.id,
             error={
                 "code": ErrorCode.INTERNAL_ERROR,
                 "message": f"Internal server error: {str(e)}"
             }
         )
+        return JSONResponse(content=response.model_dump(exclude_none=True))
 
 
 async def handle_initialize(request_data: MCPRequest) -> MCPResponse:
@@ -383,7 +396,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 @app.on_event("startup")
 async def startup_event():
-    """Startup event - initialize connections"""
+    """Startup event - initialize connections and start collection agent"""
     logger.info("=" * 80)
     logger.info("Starting Compliance MCP Server")
     logger.info("=" * 80)
@@ -392,11 +405,51 @@ async def startup_event():
         logger.info(f"  • {tool_name}")
     logger.info("=" * 80)
 
+    # Start autonomous collection agent
+    try:
+        logger.info("Starting Autonomous Collection Agent...")
+        from agents.data_collector import start_collection_agent
+        await asyncio.to_thread(start_collection_agent)
+        logger.info("✅ Autonomous Collection Agent started successfully")
+    except Exception as e:
+        logger.error(f"Failed to start collection agent: {str(e)}", exc_info=True)
+        logger.warning("Server will continue without autonomous collection agent")
+
+    # Initialize knowledge base with embeddings
+    try:
+        logger.info("Initializing Knowledge Base Agent...")
+        from models.database_config import DatabaseConfig
+        from repositories.sod_rule_repository import SODRuleRepository
+        from agents.knowledge_base_pgvector import create_knowledge_base
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+        rule_repo = SODRuleRepository(session)
+
+        # This will auto-create embeddings from sod_rules.json if missing
+        kb_agent = create_knowledge_base(
+            session=session,
+            sod_rule_repo=rule_repo
+        )
+        logger.info("✅ Knowledge Base Agent initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize knowledge base: {str(e)}", exc_info=True)
+        logger.warning("Server will continue without knowledge base embeddings")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Shutdown event - cleanup"""
+    """Shutdown event - cleanup and stop collection agent"""
     logger.info("Shutting down Compliance MCP Server")
+
+    # Stop autonomous collection agent
+    try:
+        logger.info("Stopping Autonomous Collection Agent...")
+        from agents.data_collector import stop_collection_agent
+        await asyncio.to_thread(stop_collection_agent)
+        logger.info("✅ Autonomous Collection Agent stopped successfully")
+    except Exception as e:
+        logger.error(f"Error stopping collection agent: {str(e)}", exc_info=True)
 
 
 # ============================================================================

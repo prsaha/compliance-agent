@@ -4,9 +4,9 @@
 
 | Property | Value |
 |----------|-------|
-| **Document Version** | 3.2.0 |
-| **Last Updated** | 2026-02-12 |
-| **Status** | ✅ Production Ready - LLM Agnostic + Okta + pgvector + Redis Cache |
+| **Document Version** | 3.3.0 |
+| **Last Updated** | 2026-02-12 20:45:00 |
+| **Status** | ✅ Production Ready - LLM Agnostic + Okta + pgvector + Redis Cache + Agent Response Pattern |
 | **Owner** | Prabal Saha |
 | **Project** | SOD Compliance & Risk Assessment System |
 
@@ -1482,6 +1482,133 @@ LLMResponse(
   - Cache MISS + LLM: 1-3 seconds
   - Cost reduction: 50-90%
   - Hit rate: 50-70% typical
+
+### 5. MCP (Model Context Protocol) Integration 🆕
+
+**Protocol**: JSON-RPC 2.0 over HTTP
+**Transport**: stdio (Claude Desktop), HTTP (Claude Web API)
+**Port**: 8080 (configurable via MCP_SERVER_PORT)
+**Authentication**: API Key in X-API-Key header
+
+**MCP Server** (`mcp/mcp_server.py`):
+- FastAPI + Uvicorn ASGI server
+- 20 registered MCP tools
+- Async tool execution
+- Health monitoring endpoint
+- Tool discovery via `/tools` endpoint
+- Request logging and error handling
+
+**Tool Categories**:
+1. **System Management (5 tools)**: list_systems, get_user_violations, remediate_violation, schedule_review, get_violation_stats
+2. **Data Synchronization (5 tools)**: start_collection_agent, stop_collection_agent, get_collection_agent_status, trigger_manual_sync, list_all_users
+3. **SOD Analysis (8 tools)**: analyze_access_request, query_sod_rules, get_compensating_controls, validate_job_role, check_permission_conflict, get_permission_categories, search_permissions, **analyze_role_permissions** 🔥
+4. **Knowledge Base (2 tools)**: query_knowledge_base, perform_access_review
+
+**NEW TOOL: analyze_role_permissions** 🔥
+
+**Purpose**: Internal role conflict analysis - identifies SOD violations within a single role
+
+**Pattern**: Agent Response with Attachments
+- Agent performs comprehensive analysis with database access
+- Agent generates detailed professional markdown report
+- Agent saves report to `output/role_analysis/{role_name}_{timestamp}.md`
+- Agent returns concise summary for LLM to present
+- User receives both: conversational response + detailed attachment
+- Benefits: No context window limits, shareable reports, audit trail
+
+**Parameters**:
+```json
+{
+  "role_name": "string (required)",
+  "include_remediation_plan": "boolean (optional, default: true)",
+  "output_format": "markdown|json|both (optional, default: markdown)"
+}
+```
+
+**Process**:
+1. Query database for role permissions with levels (View/Create/Edit/Full)
+2. Load permission mapping (341 NetSuite permissions)
+3. Categorize permissions (transaction_entry, transaction_payment, etc.)
+4. Apply 5×5 conflict matrices per SOD rule
+5. Detect conflicts using category pairs + level severity
+6. Group conflicts by severity (CRITICAL, HIGH, MEDIUM)
+7. Generate comprehensive markdown report with:
+   - Executive summary with risk assessment
+   - All conflicts with permission pairs and levels
+   - Permission breakdown by category
+   - Three remediation options (split role, reduce permissions, add controls)
+   - Level modification recommendations table
+   - Testing plan and audit compliance
+8. Save report to filesystem
+9. Return formatted summary
+
+**Response Format**:
+```
+Internal Role Conflict Analysis: {role_name}
+
+📊 EXECUTIVE SUMMARY
+• Total Permissions: {count}
+• Internal Conflicts Found: {count}
+• Risk Assessment: 🔴 CRITICAL / 🟠 HIGH / 🟡 MEDIUM
+
+🔥 TOP 5 CRITICAL CONFLICTS
+1. 🔴 CRIT - {permission1} + {permission2}
+   Conflict: {category1} ({level1}) ↔ {category2} ({level2})
+   Inherent Risk: {score}/100
+...
+
+💾 DETAILED REPORT SAVED
+File: output/role_analysis/{role_name}_{timestamp}.md
+
+🎯 RECOMMENDED NEXT STEPS
+1. Review detailed report for complete analysis
+2. Consider role split or permission reduction
+3. Implement compensating controls if role must remain as-is
+```
+
+**Example Usage** (Claude Desktop):
+```
+User: "Analyze the Fivetran - Cash Accountant role for conflicts"
+
+Claude calls: analyze_role_permissions({
+  "role_name": "Fivetran - Cash Accountant",
+  "include_remediation_plan": true
+})
+
+Response:
+- Summary with 181 conflicts found
+- Top 5 critical conflicts shown inline
+- File path to full 50-page detailed report
+- Recommended next steps
+```
+
+**Performance**:
+- Analysis time: ~2 seconds for 160 permissions
+- Report generation: ~500ms
+- File write: <100ms
+- Total latency: <3 seconds
+
+**Use Cases**:
+- Pre-deployment role design review
+- Existing role audit and cleanup
+- Regulatory compliance assessments (SOX, PCI-DSS)
+- Risk reduction initiatives
+- Role consolidation projects
+
+**Report Format** (Markdown):
+- Executive Summary (risk level, conflict counts)
+- Detailed Conflict Analysis (all conflicts by severity)
+- Permission Breakdown (grouped by category with counts)
+- Remediation Recommendations (3 options with cost/timeline)
+- Level Modification Table (specific downgrades)
+- Testing Plan (validation steps)
+- Audit Compliance (regulatory alignment)
+
+**Integration**:
+- MCP tool handler: `mcp/mcp_tools.py::analyze_role_permissions_handler()`
+- Database queries: PostgreSQL via SQLAlchemy
+- File output: `output/role_analysis/` directory
+- Report naming: `{role_name}_{YYYYMMDD}_{HHMMSS}.md`
 
 ---
 

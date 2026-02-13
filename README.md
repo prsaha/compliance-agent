@@ -410,6 +410,137 @@ Every API response now includes governance metrics:
 
 ---
 
+## 🤖 Autonomous Data Collection Agent (NEW)
+
+### Background Sync Service
+
+The system now includes an **autonomous data collection agent** that proactively syncs user, role, and permission data from external systems to PostgreSQL.
+
+### Why Autonomous Collection?
+
+**Problem with On-Demand Syncing:**
+- ❌ Slow queries (wait for API calls)
+- ❌ Incomplete data (misses users unless explicitly requested)
+- ❌ Reactive (only syncs when asked)
+- ❌ Inconsistent state (data gets stale)
+
+**Benefits of Autonomous Collection:**
+- ✅ **Instant queries** - Always hits database (sub-second)
+- ✅ **Complete data** - Syncs ALL users automatically
+- ✅ **Proactive** - Scheduled syncs keep data fresh
+- ✅ **Reliable** - Predictable performance
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────┐
+│         Autonomous Collection Agent                     │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │         APScheduler Background Jobs              │  │
+│  │  • Full Sync: Daily at 2:00 AM                  │  │
+│  │  • Incremental Sync: Every hour                 │  │
+│  └──────────────────────────────────────────────────┘  │
+│                         │                                │
+│                         ▼                                │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  1. Fetch ALL users from NetSuite               │  │
+│  │  2. Sync to PostgreSQL (upsert)                 │  │
+│  │  3. Run SOD analysis                             │  │
+│  │  4. Track sync metadata & metrics                │  │
+│  └──────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Quick Start
+
+**Start the agent:**
+```bash
+# Option 1: Via CLI
+python manage_collector.py start --daemon
+
+# Option 2: Via MCP Tools
+# Use start_collection_agent tool from Claude
+
+# Option 3: Automatic with MCP server
+# Agent auto-starts when MCP server starts
+```
+
+**Check status:**
+```bash
+python manage_collector.py status
+```
+
+**Trigger manual sync:**
+```bash
+python manage_collector.py sync --type full
+```
+
+### Features
+
+- **Scheduled Syncs**
+  - Full sync: Daily at 2:00 AM (all users)
+  - Incremental sync: Hourly (changed data)
+
+- **Metadata Tracking**
+  - Success/failure rates
+  - Sync durations and metrics
+  - Users/roles/violations synced
+
+- **SOD Integration**
+  - Automatic analysis after each sync
+  - Violation detection and tracking
+  - Risk scoring updates
+
+- **Monitoring**
+  - Real-time status via CLI or MCP tools
+  - Sync history and statistics
+  - Error tracking and alerting
+
+### CLI Commands
+
+```bash
+# Start/stop agent
+python manage_collector.py start [--daemon]
+python manage_collector.py stop
+
+# Monitor
+python manage_collector.py status
+python manage_collector.py history [--limit 20]
+python manage_collector.py stats [--days 7]
+
+# Trigger sync
+python manage_collector.py sync [--type full|incremental]
+```
+
+### MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `start_collection_agent` | Start the autonomous agent |
+| `stop_collection_agent` | Stop the autonomous agent |
+| `get_collection_agent_status` | Get current status & history |
+| `trigger_manual_sync` | Manually trigger a sync |
+
+### Documentation
+
+- **[docs/COLLECTION_AGENT.md](docs/COLLECTION_AGENT.md)** - Complete guide
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System architecture
+- **[tests/test_collection_agent.py](tests/test_collection_agent.py)** - Test suite
+
+### Database Schema
+
+The agent uses the `sync_metadata` table to track all sync operations:
+- Sync type, status, timing, metrics
+- Users/roles/violations synced
+- Error tracking and retry counts
+- Execution metadata
+
+See [migrations/001_add_sync_metadata.sql](migrations/001_add_sync_metadata.sql) for schema.
+
+**Status:** ✅ **Ready for Production**
+
+---
+
 ## 🚀 Production Deployment
 
 See **[PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md)** for complete guide.

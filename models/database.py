@@ -11,7 +11,7 @@ from sqlalchemy import (
     ForeignKey, Index, Float, Enum as SQLEnum
 )
 from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from pgvector.sqlalchemy import Vector
 import uuid
 import enum
@@ -276,6 +276,69 @@ class Violation(Base):
 
     def __repr__(self):
         return f"<Violation(user_id='{self.user_id}', severity='{self.severity}', status='{self.status}')>"
+
+
+class SyncStatus(enum.Enum):
+    """Status of data collection sync"""
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class SyncType(enum.Enum):
+    """Type of data collection sync"""
+    FULL = "FULL"
+    INCREMENTAL = "INCREMENTAL"
+    MANUAL = "MANUAL"
+
+
+class SyncMetadata(Base):
+    """Data collection sync job metadata"""
+    __tablename__ = 'sync_metadata'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # Sync details
+    sync_type = Column(SQLEnum(SyncType), nullable=False)
+    system_name = Column(String(100), nullable=False, index=True)
+    status = Column(SQLEnum(SyncStatus), nullable=False, index=True)
+
+    # Timing
+    started_at = Column(DateTime, nullable=False, index=True)
+    completed_at = Column(DateTime, index=True)
+    duration_seconds = Column(Float)
+
+    # Metrics
+    users_fetched = Column(Integer, default=0)
+    users_synced = Column(Integer, default=0)
+    users_updated = Column(Integer, default=0)
+    users_created = Column(Integer, default=0)
+    roles_synced = Column(Integer, default=0)
+    violations_detected = Column(Integer, default=0)
+
+    # Error handling
+    error_message = Column(Text)
+    error_details = Column(JSON)
+    retry_count = Column(Integer, default=0)
+
+    # Additional context
+    extra_metadata = Column('metadata', JSON)  # Column name is 'metadata', attribute is 'extra_metadata'
+    triggered_by = Column(String(255))
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_sync_last_success', 'system_name', 'completed_at',
+              postgresql_where=(status == SyncStatus.SUCCESS)),
+    )
+
+    def __repr__(self):
+        return f"<SyncMetadata(sync_type='{self.sync_type.value}', system='{self.system_name}', status='{self.status.value}')>"
 
 
 class ComplianceScan(Base):
@@ -652,3 +715,36 @@ class ViolationExemption(Base):
 
     def __repr__(self):
         return f"<ViolationExemption(id='{self.id}', status='{self.status}', reason='{self.reason[:50]}...')>"
+
+
+class JobRoleMapping(Base):
+    """
+    Job role to NetSuite role mappings with acceptable combinations
+
+    Maps job titles to acceptable role combinations and business justifications
+    for context-aware SOD analysis
+    """
+    __tablename__ = "job_role_mappings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_role_id = Column(String(50), unique=True, nullable=False)
+    job_title = Column(String(255), nullable=False)
+    department = Column(String(100))
+    acceptable_role_combinations = Column(JSONB, default=[])  # List of acceptable role combinations
+    business_justification = Column(Text)  # Business justification for role combination
+    requires_compensating_controls = Column(Boolean, default=False)
+    typical_controls = Column(ARRAY(String), default=[])  # Array of control IDs
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    metadata_col = Column('metadata', JSONB, default={})  # Use metadata_col to avoid SQLAlchemy reserved name
+
+    # Indexes
+    __table_args__ = (
+        Index('idx_job_role_mappings_title', 'job_title'),
+        Index('idx_job_role_mappings_dept', 'department'),
+        Index('idx_job_role_mappings_active', 'is_active'),
+    )
+
+    def __repr__(self):
+        return f"<JobRoleMapping(id='{self.id}', job_title='{self.job_title}', department='{self.department}')>"
