@@ -790,6 +790,20 @@ TOOL_SCHEMAS = {
         }
     },
 
+    "initialize_session": {
+        "description": "Initialize compliance session and show personalized welcome with user's permissions and approval authority. Call this when user first logs in to show what they can do. Returns friendly welcome message with approval capabilities.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "my_email": {
+                    "type": "string",
+                    "description": "Your email address"
+                }
+            },
+            "required": ["my_email"]
+        }
+    },
+
     "check_my_approval_authority": {
         "description": "Check if current user (by email) has authority to approve SOD exceptions at different risk levels. Validates against NetSuite roles and returns approval authority matrix. Use this when user logs in to show what they can approve.",
         "inputSchema": {
@@ -3766,6 +3780,126 @@ async def get_exceptions_for_review_handler(
 # PHASE 4: RBAC AND APPROVAL WORKFLOWS
 # ============================================================================
 
+async def initialize_session_handler(my_email: str) -> str:
+    """
+    Initialize session and provide personalized welcome with approval authority
+
+    Returns:
+        Friendly welcome message with user's permissions and what they can do
+    """
+    try:
+        logger.info(f"Initializing session for: {my_email}")
+
+        from models.database_config import DatabaseConfig
+        from services.approval_service import ApprovalService
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+
+        approval_service = ApprovalService(session)
+
+        # Authenticate user
+        user_info = approval_service.authenticate_user(my_email)
+
+        if not user_info:
+            return f"""❌ **Authentication Failed**
+
+Unable to find user: {my_email}
+
+Please ensure you're using your corporate email address.
+Contact your administrator if you need access.
+"""
+
+        # Check authority for each level
+        can_approve_low = approval_service.check_approval_authority(my_email, 30)[0]
+        can_approve_medium = approval_service.check_approval_authority(my_email, 50)[0]
+        can_approve_high = approval_service.check_approval_authority(my_email, 70)[0]
+        can_approve_critical = approval_service.check_approval_authority(my_email, 85)[0]
+
+        # Determine highest approval level
+        approval_level = "NONE"
+        if can_approve_critical:
+            approval_level = "CRITICAL (All Levels)"
+        elif can_approve_high:
+            approval_level = "HIGH (+ MEDIUM/LOW)"
+        elif can_approve_medium:
+            approval_level = "MEDIUM (+ LOW)"
+        elif can_approve_low:
+            approval_level = "LOW Only"
+
+        # Create welcome message
+        output = f"""╔{'═'*78}╗
+║{' '*20}🎯 COMPLIANCE SESSION INITIALIZED{' '*25}║
+╚{'═'*78}╝
+
+👤 **Welcome, {user_info['name']}!**
+
+**Your Profile:**
+• Email: {user_info['email']}
+• Job Title: {user_info.get('job_title') or 'N/A'}
+• Department: {user_info.get('department') or 'N/A'}
+• Roles: {len(user_info['roles'])} NetSuite role(s)
+
+**Your Approval Authority:** {'✅ ' + approval_level if approval_level != 'NONE' else '❌ No Approval Authority'}
+
+"""
+
+        if approval_level != "NONE":
+            output += f"""**What You Can Do:**
+"""
+            if can_approve_low:
+                output += f"✅ Approve LOW risk exceptions (score < 40)\n"
+            if can_approve_medium:
+                output += f"✅ Approve MEDIUM risk exceptions (score 40-59)\n"
+            if can_approve_high:
+                output += f"✅ Approve HIGH risk exceptions (score 60-74)\n"
+            if can_approve_critical:
+                output += f"✅ Approve CRITICAL risk exceptions (score ≥75)\n"
+
+            output += f"""
+**Available Actions:**
+• Use `request_exception_approval` to approve exceptions with RBAC validation
+• Use `record_exception_approval` to directly record pre-approved exceptions
+• Use `list_approved_exceptions` to see existing exceptions
+• Use `conduct_exception_review` to review periodic exceptions
+
+"""
+        else:
+            output += f"""**Your Access:**
+❌ You do not have approval authority for SOD exceptions
+
+**What You Can Do:**
+• Use `request_exception_approval` to submit requests (will escalate to authorized approver)
+• Use `list_approved_exceptions` to view existing exceptions
+• Use `get_user_violations` to check your own or others' SOD violations
+• Use `analyze_access_request` to analyze potential role assignments
+
+**To Get Approval:**
+All exception requests from you will be automatically routed to an authorized approver
+(typically CFO, Controller, or Director depending on risk level).
+
+"""
+
+        # Show key roles
+        if user_info['roles']:
+            output += f"**Your NetSuite Roles:**\n"
+            for i, role in enumerate(user_info['roles'][:5], 1):
+                output += f"{i}. {role}\n"
+            if len(user_info['roles']) > 5:
+                output += f"... and {len(user_info['roles']) - 5} more\n"
+
+        output += f"""
+{'─'*80}
+💡 **Tip:** Use `check_my_approval_authority` for detailed approval authority matrix
+"""
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in initialize_session_handler: {str(e)}", exc_info=True)
+        return f"❌ Error initializing session: {str(e)}"
+
+
 async def check_my_approval_authority_handler(
     my_email: str,
     check_for_risk_score: float = None
@@ -4084,6 +4218,7 @@ TOOL_HANDLERS = {
     "conduct_exception_review": conduct_exception_review_handler,
     "get_exceptions_for_review": get_exceptions_for_review_handler,
     # RBAC and Approval Workflows (Phase 4)
+    "initialize_session": initialize_session_handler,
     "check_my_approval_authority": check_my_approval_authority_handler,
     "request_exception_approval": request_exception_approval_handler
 }
