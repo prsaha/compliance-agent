@@ -42,7 +42,7 @@ TOOL_SCHEMAS = {
     },
 
     "perform_access_review": {
-        "description": "Perform a comprehensive user access review for a specific system, analyzing SOD violations and generating recommendations",
+        "description": "Perform a comprehensive multi-step user access review for an ENTIRE system, analyzing SOD violations, excessive permissions, and inactive users across ALL users. Use when user wants 'full system audit', 'comprehensive review', 'analyze all NetSuite users', or 'complete access review'. This is a heavyweight operation that processes all users. For specific users/departments, use get_user_violations or list_all_users with filter_by_department instead for faster results.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -231,7 +231,7 @@ TOOL_SCHEMAS = {
     },
 
     "list_all_users": {
-        "description": "Get a complete list of all active users in a system with their roles and basic information",
+        "description": "Get a complete list of all active users in a system with their roles and basic information. Use when user asks to 'show Finance users', 'list Accounting team', 'who is in [department]', 'list all users', or 'review [department] access'. Supports hierarchical department matching (e.g., 'Finance' matches 'Fivetran : G&A : Finance'). For individual user analysis, use get_user_violations instead.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -446,7 +446,7 @@ TOOL_SCHEMAS = {
     },
 
     "recommend_roles_for_job_title": {
-        "description": "**PRIMARY TOOL for role recommendations** - Gets actual roles from database by analyzing what existing employees with similar job titles currently have. ALWAYS use this FIRST before recommending roles. Includes automatic SOD conflict checking. Never assume roles based on job title alone - always query actual peer data.",
+        "description": "**PRIMARY TOOL for role recommendations** - Gets actual roles from database by analyzing what existing employees with similar job titles currently have. Use when user asks 'what roles should I give [job title]', 'roles for new Controller', 'safe roles for [position]', 'onboard new hire as [title]', or 'role recommendations for [job]'. ALWAYS use this FIRST before recommending roles. Includes automatic SOD conflict checking. Never assume roles based on job title alone - always query actual peer data to ensure recommendations match organizational patterns.",
         "inputSchema": {
             "type": "object",
             "properties": {
