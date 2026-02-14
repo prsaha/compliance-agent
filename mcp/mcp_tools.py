@@ -788,6 +788,99 @@ TOOL_SCHEMAS = {
             },
             "required": []
         }
+    },
+
+    "check_my_approval_authority": {
+        "description": "Check if current user (by email) has authority to approve SOD exceptions at different risk levels. Validates against NetSuite roles and returns approval authority matrix. Use this when user logs in to show what they can approve.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "my_email": {
+                    "type": "string",
+                    "description": "Your email address (will be validated against active users)"
+                },
+                "check_for_risk_score": {
+                    "type": "number",
+                    "description": "Optional: Check authority for specific risk score (0-100)"
+                }
+            },
+            "required": ["my_email"]
+        }
+    },
+
+    "request_exception_approval": {
+        "description": "Request approval for SOD exception with automatic RBAC validation and routing. Checks if requester has approval authority. If not, automatically finds approver in reporting chain and creates Jira ticket for escalation. Use this instead of record_exception_approval when you want RBAC enforcement.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "requester_email": {
+                    "type": "string",
+                    "description": "Email of person requesting the approval"
+                },
+                "user_identifier": {
+                    "type": "string",
+                    "description": "User email or ID for whom exception is being requested"
+                },
+                "user_name": {
+                    "type": "string",
+                    "description": "Full name of the user"
+                },
+                "role_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of role names being requested"
+                },
+                "conflict_count": {
+                    "type": "integer",
+                    "description": "Total number of SOD conflicts detected"
+                },
+                "critical_conflicts": {
+                    "type": "integer",
+                    "description": "Number of CRITICAL severity conflicts",
+                    "default": 0
+                },
+                "risk_score": {
+                    "type": "number",
+                    "description": "Overall risk score (0-100)"
+                },
+                "business_justification": {
+                    "type": "string",
+                    "description": "Business reason for approving this exception"
+                },
+                "job_title": {
+                    "type": "string",
+                    "description": "User's job title"
+                },
+                "department": {
+                    "type": "string",
+                    "description": "User's department"
+                },
+                "compensating_controls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "control_name": {"type": "string"},
+                            "risk_reduction_percentage": {"type": "number"},
+                            "estimated_annual_cost": {"type": "number"}
+                        }
+                    },
+                    "description": "List of compensating controls being proposed"
+                },
+                "review_frequency": {
+                    "type": "string",
+                    "enum": ["Monthly", "Quarterly", "Annually"],
+                    "description": "How often this exception should be reviewed",
+                    "default": "Quarterly"
+                },
+                "auto_approve_if_authorized": {
+                    "type": "boolean",
+                    "description": "If requester has authority, auto-approve and record exception",
+                    "default": False
+                }
+            },
+            "required": ["requester_email", "user_identifier", "user_name", "role_names", "conflict_count", "risk_score", "business_justification"]
+        }
     }
 }
 
@@ -3670,6 +3763,271 @@ async def get_exceptions_for_review_handler(
 
 
 # ============================================================================
+# PHASE 4: RBAC AND APPROVAL WORKFLOWS
+# ============================================================================
+
+async def check_my_approval_authority_handler(
+    my_email: str,
+    check_for_risk_score: float = None
+) -> str:
+    """
+    Check user's approval authority based on their NetSuite roles
+
+    Returns:
+        Authority matrix and roles
+    """
+    try:
+        logger.info(f"Checking approval authority for: {my_email}")
+
+        from models.database_config import DatabaseConfig
+        from services.approval_service import ApprovalService
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+
+        approval_service = ApprovalService(session)
+
+        # Authenticate user
+        user_info = approval_service.authenticate_user(my_email)
+
+        if not user_info:
+            return f"❌ User not found or inactive: {my_email}\n\nPlease ensure you're using your corporate email address."
+
+        # Format response
+        output = f"""👤 **Approval Authority Check**
+
+**User:** {user_info['name']}
+**Email:** {user_info['email']}
+**Status:** {user_info['status']}
+**Job Title:** {user_info.get('job_title', 'N/A')}
+**Department:** {user_info.get('department', 'N/A')}
+
+**NetSuite Roles ({len(user_info['roles'])}):**
+"""
+
+        if user_info['roles']:
+            for role in user_info['roles']:
+                output += f"• {role}\n"
+        else:
+            output += "• No roles assigned\n"
+
+        output += f"\n**Approval Authority Matrix:**\n\n"
+
+        # Check authority for each risk level
+        risk_levels = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+        risk_scores = {"LOW": 30, "MEDIUM": 50, "HIGH": 70, "CRITICAL": 85}
+
+        for level in risk_levels:
+            score = risk_scores[level]
+            has_authority, _, reason = approval_service.check_approval_authority(
+                my_email,
+                score
+            )
+
+            emoji = "✅" if has_authority else "❌"
+            output += f"{emoji} **{level}** (Risk Score < {score + 15}): "
+
+            if has_authority:
+                output += "Can Approve\n"
+            else:
+                output += "Cannot Approve\n"
+
+            # Show required roles
+            required_roles = approval_service.get_required_approval_roles(score)
+            output += f"   • Required: {', '.join(required_roles[:2])}{'...' if len(required_roles) > 2 else ''}\n"
+
+        # If specific risk score provided, check that
+        if check_for_risk_score is not None:
+            output += f"\n---\n\n**Specific Check (Risk Score {check_for_risk_score}):**\n"
+
+            has_authority, risk_level, reason = approval_service.check_approval_authority(
+                my_email,
+                check_for_risk_score
+            )
+
+            if has_authority:
+                output += f"✅ **Authorized** to approve {risk_level} risk exceptions\n"
+            else:
+                output += f"❌ **Not Authorized** to approve {risk_level} risk exceptions\n\n"
+                output += f"**Reason:** {reason}\n\n"
+
+                # Find who can approve
+                approver = approval_service.find_approver_in_chain(my_email, check_for_risk_score)
+                if approver:
+                    output += f"**Escalation Path:**\n"
+                    output += f"• Will route to: {approver['name']} ({approver['email']})\n"
+                    output += f"• Levels Up: {approver['levels_up']}\n"
+                    output += f"• Jira ticket will be auto-created\n"
+
+        output += f"\n💡 **Usage:**\n"
+        output += f"• If authorized: Use `record_exception_approval` to approve directly\n"
+        output += f"• If not authorized: Use `request_exception_approval` to escalate via Jira\n"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in check_my_approval_authority_handler: {str(e)}", exc_info=True)
+        return f"❌ Error checking approval authority: {str(e)}"
+
+
+async def request_exception_approval_handler(
+    requester_email: str,
+    user_identifier: str,
+    user_name: str,
+    role_names: List[str],
+    conflict_count: int,
+    risk_score: float,
+    business_justification: str,
+    job_title: str = None,
+    department: str = None,
+    critical_conflicts: int = 0,
+    compensating_controls: List[Dict[str, Any]] = None,
+    review_frequency: str = "Quarterly",
+    auto_approve_if_authorized: bool = False
+) -> str:
+    """
+    Request exception approval with RBAC validation and automatic routing
+
+    Returns:
+        Approval result or escalation confirmation
+    """
+    try:
+        logger.info(f"Processing approval request from: {requester_email}")
+
+        from models.database_config import DatabaseConfig
+        from services.approval_service import ApprovalService
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+
+        approval_service = ApprovalService(session)
+
+        # Prepare exception details
+        exception_details = {
+            "user_identifier": user_identifier,
+            "user_name": user_name,
+            "user_email": user_identifier if "@" in user_identifier else None,
+            "role_names": role_names,
+            "conflict_count": conflict_count,
+            "critical_conflicts": critical_conflicts,
+            "high_conflicts": 0,  # Could be passed as parameter
+            "medium_conflicts": 0,
+            "low_conflicts": 0,
+            "risk_score": risk_score,
+            "business_justification": business_justification,
+            "job_title": job_title,
+            "department": department,
+            "compensating_controls": compensating_controls or [],
+            "review_frequency": review_frequency
+        }
+
+        # Process approval request with RBAC
+        result = approval_service.process_approval_request(
+            requester_email,
+            exception_details
+        )
+
+        # Format response based on outcome
+        if result['approved']:
+            # User is authorized
+            output = f"""✅ **Approval Authority Confirmed**
+
+{result['message']}
+
+**Exception Details:**
+• User: {user_name} ({user_identifier})
+• Roles: {len(role_names)}
+• Conflicts: {conflict_count} ({critical_conflicts} critical)
+• Risk Score: {risk_score:.1f}/100
+• Risk Level: {result['risk_level']}
+"""
+
+            if auto_approve_if_authorized:
+                # Auto-approve and record exception
+                output += f"\n🔄 **Auto-Approving Exception...**\n\n"
+
+                # Call record_exception_approval
+                approval_result = await record_exception_approval_handler(
+                    user_identifier=user_identifier,
+                    user_name=user_name,
+                    role_names=role_names,
+                    conflict_count=conflict_count,
+                    critical_conflicts=critical_conflicts,
+                    risk_score=risk_score,
+                    business_justification=business_justification,
+                    approved_by=result['approver']['name'],
+                    approval_authority=result['approver'].get('job_title', 'Authorized Approver'),
+                    job_title=job_title,
+                    department=department,
+                    compensating_controls=compensating_controls,
+                    review_frequency=review_frequency
+                )
+
+                output += approval_result
+
+            else:
+                output += f"\n💡 **Next Steps:**\n"
+                output += f"• Use `record_exception_approval` to formally record this exception\n"
+                output += f"• Include your name ({result['approver']['name']}) as approved_by\n"
+                output += f"• Reference your authority level: {result['risk_level']} approval rights\n"
+
+        else:
+            # User is NOT authorized - escalation needed
+            output = f"""⚠️ **Approval Escalation Required**
+
+{result['message']}
+
+**Exception Request Details:**
+• Requester: {requester_email}
+• User: {user_name} ({user_identifier})
+• Roles: {len(role_names)} - {', '.join(role_names[:2])}{'...' if len(role_names) > 2 else ''}
+• Conflicts: {conflict_count} ({critical_conflicts} critical)
+• Risk Score: {risk_score:.1f}/100
+• Risk Level: {result['risk_level']}
+
+"""
+
+            if result['approver']:
+                output += f"**Approval Routed To:**\n"
+                output += f"• Name: {result['approver']['name']}\n"
+                output += f"• Email: {result['approver']['email']}\n"
+                output += f"• Job Title: {result['approver'].get('job_title', 'N/A')}\n"
+                output += f"• Relationship: {result['approver']['levels_up']} level(s) up in reporting chain\n\n"
+
+            if result['jira_ticket']:
+                output += f"**Jira Ticket Created:**\n"
+                output += f"• Ticket: {result['jira_ticket']}\n"
+                output += f"• Assigned to: {result['approver']['name']}\n"
+                output += f"• Priority: {approval_service._get_jira_priority(risk_score)}\n\n"
+
+                output += f"**Next Steps:**\n"
+                output += f"1. Approver ({result['approver']['name']}) will review Jira ticket\n"
+                output += f"2. Once approved, use `record_exception_approval` with approver's name\n"
+                output += f"3. Link Jira ticket: `ticket_reference='{result['jira_ticket']}'`\n"
+
+            else:
+                output += f"**Jira Integration:**\n"
+                output += f"• Jira not configured (no ticket created)\n"
+                output += f"• Please contact {result['approver']['name']} directly\n"
+                output += f"• Manual approval required before recording exception\n"
+
+        output += f"\n**Business Justification:**\n{business_justification}\n"
+
+        if compensating_controls:
+            output += f"\n**Proposed Compensating Controls ({len(compensating_controls)}):**\n"
+            for i, control in enumerate(compensating_controls, 1):
+                output += f"{i}. {control.get('control_name')}\n"
+                output += f"   • Risk Reduction: {control.get('risk_reduction_percentage', 0)}%\n"
+                output += f"   • Annual Cost: ${control.get('estimated_annual_cost', 0):,.0f}\n"
+
+        return output
+
+    except Exception as e:
+        logger.error(f"Error in request_exception_approval_handler: {str(e)}", exc_info=True)
+        return f"❌ Error processing approval request: {str(e)}"
+
+
+# ============================================================================
 # TOOL REGISTRY
 # ============================================================================
 
@@ -3706,7 +4064,10 @@ TOOL_HANDLERS = {
     # Exception Management Tools (Phase 3)
     "detect_exception_violations": detect_exception_violations_handler,
     "conduct_exception_review": conduct_exception_review_handler,
-    "get_exceptions_for_review": get_exceptions_for_review_handler
+    "get_exceptions_for_review": get_exceptions_for_review_handler,
+    # RBAC and Approval Workflows (Phase 4)
+    "check_my_approval_authority": check_my_approval_authority_handler,
+    "request_exception_approval": request_exception_approval_handler
 }
 
 
