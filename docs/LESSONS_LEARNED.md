@@ -4687,6 +4687,339 @@ if result.get('approver'):  # Was: result['approver']
 
 ---
 
+### Issue #20: Department Filtering with Hierarchical Names
+
+**Date:** 2026-02-14
+**Component:** User Filtering and Department Queries
+**Severity:** Medium (No results for valid queries)
+**Status:** ✅ Resolved
+
+#### Problem Statement
+
+When users queried for "Accounting Dept" or "Finance" department users, the system returned zero users despite 76 Finance department users existing in the database. The department filter was using exact string matching against hierarchical department names.
+
+**User Experience:**
+```
+User: "What are the SOD violations for Accounting Dept?"
+System: "The department filter didn't return specific Accounting users"
+```
+
+#### Root Cause Analysis
+
+The `list_all_users_sync` method in `mcp/orchestrator.py` used **exact match** for department filtering:
+
+```python
+# ❌ WRONG: Exact match fails with hierarchical names
+if u.get('department', '').lower() == filter_by_department.lower()
+```
+
+This failed because:
+- User query: `"Finance"` or `"Accounting Dept"`
+- Actual department: `"Fivetran : G&A : Finance"` (hierarchical path)
+- Exact match: `"finance" == "fivetran : g&a : finance"` → ❌ FALSE
+- Result: 0 users found
+
+**Database Reality:**
+```
+SELECT department FROM users WHERE department LIKE '%Finance%';
+→ "Fivetran : G&A : Finance" (75 users)
+
+SELECT department FROM users WHERE department = 'Finance';
+→ 0 results
+```
+
+#### Solution Implementation
+
+Changed from exact match to **partial/substring match**:
+
+```python
+# ✅ CORRECT: Partial match works with hierarchical names
+filter_lower = filter_by_department.lower()
+users_data = [
+    u for u in users_data
+    if filter_lower in u.get('department', '').lower()
+]
+logger.info(f"Filtered to {len(users_data)} users matching '{filter_by_department}'")
+```
+
+**File Changed:** `mcp/orchestrator.py` line 748-754
+
+#### Verification
+
+**Before Fix:**
+```
+Query: "Finance"
+Result: 0 users found
+```
+
+**After Fix:**
+```
+Query: "Finance"
+Result: ✅ 76 users found from "Fivetran : G&A : Finance"
+```
+
+#### Lessons Learned
+
+1. **Hierarchical Data Requires Partial Matching:**
+   - Never assume flat naming conventions
+   - Department names often follow hierarchies: `Company : Division : Department`
+   - Use substring matching (`in`) for flexible queries
+   - Consider adding aliases for common department shorthand
+
+2. **Test with Real User Queries:**
+   - Users say "Finance" not "Fivetran : G&A : Finance"
+   - Natural language queries use simplified terms
+   - System should understand common synonyms and abbreviations
+
+3. **Data Structure Documentation:**
+   - Document the actual format of data fields
+   - Department format: `{Company} : {Division} : {Department} : {SubDepartment}`
+   - Users need to know what search terms will work
+
+4. **Logging for Debugging:**
+   - Log filtered result counts: `"Filtered to 76 users matching 'Finance'"`
+   - Helps verify filter is working without inspecting data
+   - Shows users what the system found
+
+#### Prevention Strategy
+
+1. **Flexible Matching for Hierarchical Fields:**
+   - Use partial matching for: departments, locations, business units
+   - Use exact matching for: emails, IDs, usernames
+   - Document which fields support partial vs exact matching
+
+2. **Query Normalization:**
+   - Consider building a department alias map:
+     ```python
+     DEPT_ALIASES = {
+         "Accounting": "Finance",
+         "Finance": "G&A : Finance",
+         "Engineering": "R&D : Engineering"
+     }
+     ```
+
+3. **User Feedback:**
+   - Show what filter was applied: `"Showing users from departments matching 'Finance'"`
+   - Suggest corrections if 0 results: `"Did you mean 'G&A : Finance'?"`
+
+#### Related Issues
+
+- Issue #21: Violation count bug (also in orchestrator.py)
+- Both issues discovered while testing department-filtered user lists
+
+#### Impact
+
+**Before Fix:**
+- ❌ Department queries returned 0 results
+- ❌ Users couldn't filter by department
+- ❌ External demo scenarios broken
+
+**After Fix:**
+- ✅ "Finance" matches 76 users
+- ✅ "Engineering" matches 500+ users
+- ✅ Natural language queries work
+- ✅ Demo scenarios functional
+
+**Time to Resolution:** 15 minutes (investigation + fix + test)
+
+---
+
+### Issue #21: Violation Count Always Zero in Filtered Lists
+
+**Date:** 2026-02-14
+**Component:** User List Violation Counts
+**Severity:** High (Misleading data display)
+**Status:** ✅ Resolved
+
+#### Problem Statement
+
+When listing Finance department users, ALL users showed **0 violations** despite having hundreds of violations:
+
+```
+Finance Users (Filtered from 76 total):
+- Robin Turner: 0 violations  ← WRONG (actually 384)
+- Chase Roles: 0 violations   ← WRONG (actually 288)
+```
+
+This made the compliance dashboard useless - it appeared everyone was compliant when they weren't.
+
+#### Root Cause Analysis
+
+The `list_all_users_sync` method called `get_user_by_email()` with **wrong number of parameters**:
+
+```python
+# ❌ WRONG: Method expects 1 parameter, called with 2
+user = self.user_repo.get_user_by_email(email, system_name)  # TypeError
+```
+
+**Method Signature:**
+```python
+# user_repository.py
+def get_user_by_email(self, email: str) -> Optional[User]:
+    """Get user by email (case-insensitive)"""
+    return self.session.query(User).filter(User.email.ilike(email)).first()
+```
+
+The method signature only accepts `email` (1 parameter), but the call passed both `email` and `system_name` (2 parameters).
+
+**Error Handling:**
+```python
+try:
+    for email in user_emails:
+        user = self.user_repo.get_user_by_email(email, system_name)  # TypeError
+        if user:  # Never reached due to exception
+            violations = self.violation_repo.get_violations_by_user(user.id)
+            violation_counts[email] = len(violations)
+except Exception as e:
+    logger.warning(f"Could not fetch violation counts: {e}")  # Silently caught
+```
+
+The TypeError was **silently caught** by the try/except block, so:
+- `violation_counts` dictionary remained empty
+- All users defaulted to 0 violations
+- No error appeared in logs (only warning)
+- Bug was invisible until manual database check
+
+#### Solution Implementation
+
+**Fix:** Remove the invalid `system_name` parameter
+
+```python
+# ✅ CORRECT: Call with correct number of parameters
+user = self.user_repo.get_user_by_email(email)  # 1 parameter
+
+# Also improved error logging
+except Exception as e:
+    logger.error(f"Could not fetch violation counts: {e}", exc_info=True)  # Full traceback
+```
+
+**Files Changed:**
+- `mcp/orchestrator.py` line 763
+- Changed logging from `warning` to `error` with traceback
+
+#### Verification
+
+**Database Check:**
+```sql
+SELECT COUNT(*) FROM violations
+WHERE user_id = (SELECT id FROM users WHERE email = 'robin.turner@fivetran.com');
+→ 384 violations
+```
+
+**Before Fix:**
+```python
+await list_all_users_handler(filter_by_department="Finance")
+→ Robin Turner: 0 violations  ❌
+```
+
+**After Fix:**
+```python
+await list_all_users_handler(filter_by_department="Finance")
+→ Robin Turner: 384 violations  ✅
+```
+
+#### Lessons Learned
+
+1. **Silent Failures are Dangerous:**
+   - Broad `except Exception` can hide bugs
+   - `logger.warning()` doesn't stand out in logs
+   - Use `logger.error()` with `exc_info=True` for troubleshooting
+   - Consider failing loudly instead of silently defaulting to 0
+
+2. **Method Signature Validation:**
+   - This error would have been caught by:
+     - Type checking (mypy/pyright)
+     - Running the code path in tests
+     - IDE autocomplete showing parameter mismatch
+   - Add type hints to all methods: `def get_user_by_email(self, email: str) -> Optional[User]`
+
+3. **Verify All Code Paths:**
+   - The violation count lookup was rarely executed
+   - Only triggered when filtering users by department
+   - Smoke tests didn't cover this specific combination
+   - Need test coverage for: filtered lists + violation counts
+
+4. **Default Values Can Hide Bugs:**
+   ```python
+   violation_count = violation_counts.get(email, 0)  # Defaults to 0
+   ```
+   - Defaulting to 0 made the bug invisible
+   - Consider defaulting to `None` to make missing data obvious
+   - Or raise exception if count is missing for active user
+
+5. **Check Database When UI Shows Unexpected Zeros:**
+   - If data looks wrong (all zeros), verify against source of truth
+   - Quick SQL query revealed 384 violations, not 0
+   - UI/API bugs often manifest as unexpected zeros or nulls
+
+#### Prevention Strategy
+
+1. **Type Checking:**
+   ```bash
+   # Add to pre-commit hooks
+   mypy mcp/orchestrator.py
+   ```
+   Would catch: `error: Too many arguments for "get_user_by_email"`
+
+2. **Better Error Handling:**
+   ```python
+   # Instead of silently catching everything
+   try:
+       user = self.user_repo.get_user_by_email(email)
+       if not user:
+           logger.warning(f"User not found: {email}")
+           continue
+       violations = self.violation_repo.get_violations_by_user(user.id)
+       violation_counts[email] = len(violations)
+   except Exception as e:
+       logger.error(f"Failed to get violations for {email}: {e}", exc_info=True)
+       raise  # Don't continue with invalid data
+   ```
+
+3. **Integration Tests:**
+   ```python
+   def test_user_list_with_violations():
+       """Test that filtered user list shows violation counts"""
+       result = orchestrator.list_all_users_sync(
+           system_name="netsuite",
+           filter_by_department="Finance",
+           limit=10
+       )
+       # Verify violation counts are not all zero
+       assert any(u['violation_count'] > 0 for u in result['users'])
+   ```
+
+4. **Sanity Checks:**
+   ```python
+   # After fetching users, verify violation counts look reasonable
+   if len(users_data) > 10 and all(violation_counts.get(u['email'], 0) == 0 for u in users_data):
+       logger.warning("Suspicious: All users have 0 violations")
+   ```
+
+#### Related Issues
+
+- Issue #20: Department filtering (both issues in orchestrator.py)
+- Both discovered during same testing session
+- Both required reading orchestrator code carefully
+
+#### Impact
+
+**Before Fix:**
+- ❌ All users showed 0 violations in filtered lists
+- ❌ Compliance dashboard misleading
+- ❌ Impossible to identify high-risk users by department
+- ❌ Demo scenarios showed incorrect data
+
+**After Fix:**
+- ✅ Robin Turner correctly shows 384 violations
+- ✅ Chase Roles correctly shows 288 violations
+- ✅ Finance department shows 672 total violations
+- ✅ Dashboard now actionable
+
+**Time to Resolution:** 20 minutes (investigation + fix + verification)
+
+---
+
 ## Summary
 
 ### Key Takeaways

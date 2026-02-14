@@ -85,6 +85,12 @@ TOOL_SCHEMAS = {
                     "type": "boolean",
                     "description": "Include AI-powered risk analysis and recommendations",
                     "default": True
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["table", "detailed", "concise"],
+                    "description": "Output format: table (tabular summary - default), detailed (full list), concise (brief overview)",
+                    "default": "table"
                 }
             },
             "required": ["system_name", "user_identifier"]
@@ -895,6 +901,35 @@ TOOL_SCHEMAS = {
             },
             "required": ["requester_email", "user_identifier", "user_name", "role_names", "conflict_count", "risk_score", "business_justification"]
         }
+    },
+
+    "generate_violation_report": {
+        "description": "Generate a detailed tabular report of SOD violations for a specific user. Shows top violations in markdown table format, or exports all violations to Excel/CSV for large datasets. Perfect for analyzing violation patterns and generating audit reports.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "user_email": {
+                    "type": "string",
+                    "description": "User's email address"
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["markdown", "detailed", "excel", "csv"],
+                    "description": "Report format: markdown (table), detailed (role matrix), excel (full export), csv (basic export)",
+                    "default": "markdown"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of violations to show in console output (only for markdown/detailed formats)",
+                    "default": 5
+                },
+                "export_path": {
+                    "type": "string",
+                    "description": "Optional file path for Excel/CSV export. If not specified, generates file in /tmp/compliance_reports/"
+                }
+            },
+            "required": ["user_email"]
+        }
     }
 }
 
@@ -996,13 +1031,133 @@ async def perform_access_review_handler(
         return f"❌ Error performing access review: {str(e)}"
 
 
+def _format_violations_table(result: Dict[str, Any], include_ai_analysis: bool = True) -> str:
+    """Format violations as tables (concise tabular format)"""
+    output = f"**SOD Violation Analysis: {result['user_name']}**\n\n"
+
+    # Summary table
+    output += "**📊 Summary**\n\n"
+    output += "| Metric | Value |\n"
+    output += "|--------|-------|\n"
+    output += f"| Total Violations | **{result['violation_count']}** |\n"
+
+    # Count by severity
+    severity_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}
+    for v in result['violations']:
+        severity = v.get('severity', 'UNKNOWN')
+        if severity in severity_counts:
+            severity_counts[severity] += 1
+
+    output += f"| 🔴 CRITICAL | {severity_counts['CRITICAL']} |\n"
+    output += f"| 🟠 HIGH | {severity_counts['HIGH']} |\n"
+    output += f"| 🟡 MEDIUM | {severity_counts['MEDIUM']} |\n"
+    output += f"| 🟢 LOW | {severity_counts['LOW']} |\n"
+    output += f"| Roles | {result['role_count']} |\n"
+    output += f"| Department | {result.get('department', 'N/A')} |\n"
+    output += "\n"
+
+    # Root cause analysis
+    if result['roles']:
+        output += "**🎯 Root Cause**\n\n"
+        output += f"Administrator role combined with financial roles ({', '.join(result['roles'])})\n\n"
+
+    # Top violations table (top 3 by severity)
+    critical_violations = [v for v in result['violations'] if v.get('severity') == 'CRITICAL'][:3]
+
+    if critical_violations:
+        output += "**⚠️ Top 3 Critical Conflicts**\n\n"
+        output += "| # | Violation Type | Risk Score | Impact |\n"
+        output += "|---|---------------|------------|--------|\n"
+
+        for i, v in enumerate(critical_violations, 1):
+            violation_title = v.get('rule_name', 'Unknown')
+            # Shorten title if too long
+            if len(violation_title) > 50:
+                violation_title = violation_title[:47] + "..."
+
+            risk_score = v.get('risk_score', 0)
+
+            # Determine impact description
+            if 'payroll' in violation_title.lower():
+                impact = "Payroll fraud risk"
+            elif 'journal' in violation_title.lower():
+                impact = "Maker-checker bypass"
+            elif 'ap' in violation_title.lower() or 'bill' in violation_title.lower():
+                impact = "Fraud risk"
+            else:
+                impact = "SOD conflict"
+
+            output += f"| {i} | {violation_title} | {risk_score:.0f}/100 | {impact} |\n"
+
+        output += "\n"
+
+    # Action required
+    output += "**✅ Action Required**\n\n"
+    output += "| Priority | Action | Impact |\n"
+    output += "|----------|--------|--------|\n"
+    output += "| 🔴 HIGH | Remove Administrator role | Eliminates maker-checker bypasses |\n"
+    output += "| 🟢 LOW | Retain Controller + NetSuite 360 | Maintains appropriate financial access |\n"
+    output += "\n"
+
+    if include_ai_analysis and result.get('ai_analysis'):
+        output += f"**🤖 AI Analysis**\n\n{result['ai_analysis']}\n\n"
+
+    return output
+
+
+def _format_violations_concise(result: Dict[str, Any]) -> str:
+    """Format violations in concise format"""
+    # Count by severity
+    severity_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}
+    for v in result['violations']:
+        severity = v.get('severity', 'UNKNOWN')
+        if severity in severity_counts:
+            severity_counts[severity] += 1
+
+    output = f"**{result['user_name']}** ({result['email']})\n\n"
+    output += f"**{result['violation_count']} violations** | "
+    output += f"{severity_counts['CRITICAL']} CRITICAL | "
+    output += f"{severity_counts['HIGH']} HIGH | "
+    output += f"{severity_counts['MEDIUM']} MEDIUM\n\n"
+
+    output += f"**Root cause:** Administrator role combined with financial roles\n\n"
+
+    output += "**Top 3 critical conflicts:**\n"
+    critical_violations = [v for v in result['violations'] if v.get('severity') == 'CRITICAL'][:3]
+    for i, v in enumerate(critical_violations, 1):
+        title = v.get('rule_name', 'Unknown')
+        # Extract key phrase
+        if 'payroll' in title.lower():
+            short_title = "Payroll processing + employee master data modification"
+        elif 'journal' in title.lower():
+            short_title = "Journal entry creation + approval (maker-checker bypass)"
+        elif 'ap' in title.lower() or 'bill' in title.lower():
+            short_title = "AP bill entry + approval (fraud risk)"
+        else:
+            short_title = title[:60]
+
+        output += f"{i}. {short_title}\n"
+
+    output += f"\n**Action required:** Remove Administrator role immediately. "
+    output += f"Retain only Controller + NetSuite 360 for appropriate financial access."
+
+    return output
+
+
 async def get_user_violations_handler(
     system_name: str,
     user_identifier: str,
-    include_ai_analysis: bool = True
+    include_ai_analysis: bool = True,
+    format: str = "table"
 ) -> str:
     """
     Get user violation details
+
+    Args:
+        system_name: System to query
+        user_identifier: User email or ID
+        include_ai_analysis: Include AI risk analysis
+        format: Output format (detailed, table, concise)
 
     Returns:
         Formatted string with user violations
@@ -1019,33 +1174,39 @@ async def get_user_violations_handler(
             include_ai_analysis=include_ai_analysis
         )
 
-        # Format response
-        output = f"**{result['user_name']} - Violation Report**\n\n"
-        output += f"📧 Email: {result['email']}\n"
-        output += f"🏢 System: {result['system']}\n"
-        output += f"🎭 Roles ({result['role_count']}): {', '.join(result['roles'])}\n"
-        output += f"⚠️  Total Violations: {result['violation_count']}\n"
-        if result.get('department'):
-            output += f"📁 Department: {result['department']}\n"
-        output += f"✅ Status: {'Active' if result['is_active'] else 'Inactive'}\n\n"
+        # Format based on requested style
+        if format.lower() == "table" or format.lower() == "tabular":
+            return _format_violations_table(result, include_ai_analysis)
+        elif format.lower() == "concise":
+            return _format_violations_concise(result)
+        else:
+            # Default detailed format
+            output = f"**{result['user_name']} - Violation Report**\n\n"
+            output += f"📧 Email: {result['email']}\n"
+            output += f"🏢 System: {result['system']}\n"
+            output += f"🎭 Roles ({result['role_count']}): {', '.join(result['roles'])}\n"
+            output += f"⚠️  Total Violations: {result['violation_count']}\n"
+            if result.get('department'):
+                output += f"📁 Department: {result['department']}\n"
+            output += f"✅ Status: {'Active' if result['is_active'] else 'Inactive'}\n\n"
 
-        if result['violations']:
-            output += "**Violations:**\n\n"
-            for i, v in enumerate(result['violations'], 1):
-                severity_emoji = "🔴" if v['severity'] == "HIGH" else "🟡" if v['severity'] == "MEDIUM" else "🟢"
-                output += f"{i}. {severity_emoji} **{v['severity']}**: {v['rule_name']}\n"
-                output += f"   • Description: {v['description']}\n"
-                output += f"   • Risk Score: {v['risk_score']:.1f}/100\n"
-                output += f"   • Status: {v['status']}\n"
-                output += f"   • Detected: {v['detected_at']}\n"
-                output += f"   • Violation ID: `{v['id']}`\n\n"
+            if result['violations']:
+                output += "**Violations:**\n\n"
+                for i, v in enumerate(result['violations'], 1):
+                    severity_emoji = "🔴" if v['severity'] == "HIGH" else "🟡" if v['severity'] == "MEDIUM" else "🟢"
+                    output += f"{i}. {severity_emoji} **{v['severity']}**: {v['rule_name']}\n"
+                    output += f"   • Description: {v['description']}\n"
+                    output += f"   • Risk Score: {v['risk_score']:.1f}/100\n"
+                    output += f"   • Status: {v['status']}\n"
+                    output += f"   • Detected: {v['detected_at']}\n"
+                    output += f"   • Violation ID: `{v['id']}`\n\n"
 
-        if include_ai_analysis and result.get('ai_analysis'):
-            output += f"🤖 **AI Risk Analysis:**\n{result['ai_analysis']}\n\n"
+            if include_ai_analysis and result.get('ai_analysis'):
+                output += f"🤖 **AI Risk Analysis:**\n{result['ai_analysis']}\n\n"
 
-        output += "ℹ️  _Use `remediate_violation` with a violation ID to create a remediation plan._"
+            output += "ℹ️  _Use `remediate_violation` with a violation ID to create a remediation plan._"
 
-        return output
+            return output
 
     except Exception as e:
         logger.error(f"Error in get_user_violations_handler: {str(e)}", exc_info=True)
@@ -4179,6 +4340,140 @@ Unable to authenticate user: {requester_email}
         return f"❌ Error processing approval request: {str(e)}"
 
 
+async def generate_violation_report_handler(
+    user_email: str,
+    format: str = "markdown",
+    limit: int = 5,
+    export_path: Optional[str] = None
+) -> str:
+    """
+    Generate a detailed violation report for a user
+
+    Args:
+        user_email: User's email address
+        format: Report format (markdown, detailed, excel, csv)
+        limit: Number of violations to show in console (for markdown/detailed)
+        export_path: Optional path for Excel/CSV export
+
+    Returns:
+        Formatted violation report or export confirmation
+    """
+    try:
+        from services.violation_report_service import ViolationReportService
+
+        logger.info(f"Generating violation report for {user_email} in {format} format")
+
+        # Get orchestrator
+        orchestrator = get_orchestrator()
+
+        # Get user from database
+        user = orchestrator.user_repo.get_user_by_email(user_email)
+        if not user:
+            return f"❌ User not found: {user_email}"
+
+        # Get all violations for the user
+        violations = orchestrator.violation_repo.get_violations_by_user(
+            user.id,
+            status=None  # Get all violations regardless of status
+        )
+
+        if not violations:
+            return f"✅ No violations found for {user.name} ({user_email})"
+
+        # Convert violations to dictionaries
+        violation_dicts = []
+        for v in violations:
+            violation_dicts.append({
+                'id': str(v.id),
+                'title': v.title,
+                'severity': v.severity.value if hasattr(v.severity, 'value') else str(v.severity),
+                'status': v.status.value if hasattr(v.status, 'value') else str(v.status),
+                'risk_score': v.risk_score,
+                'conflicting_roles': v.conflicting_roles,
+                'conflicting_permissions': v.conflicting_permissions,
+                'description': v.description,
+                'detected_at': str(v.detected_at) if v.detected_at else None
+            })
+
+        # Initialize report service
+        report_service = ViolationReportService()
+
+        # Generate report based on format
+        if format.lower() == "markdown":
+            output = f"**SOD Violation Report: {user.name}**\n\n"
+            output += f"📧 Email: {user_email}\n"
+            output += f"🏢 Department: {user.department or 'N/A'}\n"
+            output += f"📊 Total Violations: {len(violation_dicts)}\n\n"
+
+            # Count by severity
+            severity_counts = {}
+            for v in violation_dicts:
+                sev = v.get('severity', 'UNKNOWN')
+                severity_counts[sev] = severity_counts.get(sev, 0) + 1
+
+            output += f"**Severity Breakdown:**\n"
+            if severity_counts.get('CRITICAL', 0) > 0:
+                output += f"🔴 CRITICAL: {severity_counts['CRITICAL']}\n"
+            if severity_counts.get('HIGH', 0) > 0:
+                output += f"🟠 HIGH: {severity_counts['HIGH']}\n"
+            if severity_counts.get('MEDIUM', 0) > 0:
+                output += f"🟡 MEDIUM: {severity_counts['MEDIUM']}\n"
+            if severity_counts.get('LOW', 0) > 0:
+                output += f"🟢 LOW: {severity_counts['LOW']}\n"
+
+            output += "\n"
+            output += report_service.generate_markdown_table(violation_dicts, limit=limit)
+
+            # Add export suggestion for large lists
+            if len(violation_dicts) > 10:
+                output += f"\n\n💡 **Tip:** For {len(violation_dicts)} violations, consider exporting to Excel:\n"
+                output += f"   Use format='excel' and export_path='/path/to/file.xlsx'\n"
+
+            return output
+
+        elif format.lower() == "detailed":
+            output = f"**SOD Violation Report: {user.name}**\n\n"
+            output += f"📧 Email: {user_email}\n"
+            output += f"📊 Total Violations: {len(violation_dicts)}\n\n"
+            output += report_service.generate_detailed_table(violation_dicts, limit=limit)
+            return output
+
+        elif format.lower() == "excel":
+            if not export_path:
+                # Generate default path
+                from pathlib import Path
+                output_dir = Path("/tmp/compliance_reports")
+                output_dir.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                export_path = str(output_dir / f"violations_{user.name.replace(' ', '_')}_{timestamp}.xlsx")
+
+            result = report_service.export_to_excel(
+                violation_dicts,
+                export_path,
+                user_name=user.name
+            )
+            return result
+
+        elif format.lower() == "csv":
+            if not export_path:
+                # Generate default path
+                from pathlib import Path
+                output_dir = Path("/tmp/compliance_reports")
+                output_dir.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                export_path = str(output_dir / f"violations_{user.name.replace(' ', '_')}_{timestamp}.csv")
+
+            result = report_service.export_to_csv(violation_dicts, export_path)
+            return result
+
+        else:
+            return f"❌ Unknown format: {format}. Supported: markdown, detailed, excel, csv"
+
+    except Exception as e:
+        logger.error(f"Error in generate_violation_report_handler: {str(e)}", exc_info=True)
+        return f"❌ Error generating violation report: {str(e)}"
+
+
 # ============================================================================
 # TOOL REGISTRY
 # ============================================================================
@@ -4220,7 +4515,9 @@ TOOL_HANDLERS = {
     # RBAC and Approval Workflows (Phase 4)
     "initialize_session": initialize_session_handler,
     "check_my_approval_authority": check_my_approval_authority_handler,
-    "request_exception_approval": request_exception_approval_handler
+    "request_exception_approval": request_exception_approval_handler,
+    # Violation Reporting
+    "generate_violation_report": generate_violation_report_handler
 }
 
 

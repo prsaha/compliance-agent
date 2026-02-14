@@ -744,12 +744,14 @@ Be specific and actionable."""
                 "users": []
             }
 
-        # Filter by department if specified
+        # Filter by department if specified (partial match to handle hierarchical dept names)
         if filter_by_department:
+            filter_lower = filter_by_department.lower()
             users_data = [
                 u for u in users_data
-                if u.get('department', '').lower() == filter_by_department.lower()
+                if filter_lower in u.get('department', '').lower()
             ]
+            logger.info(f"Filtered to {len(users_data)} users matching department filter: '{filter_by_department}'")
 
         # Get user IDs for violation lookup
         user_emails = [u['email'] for u in users_data if u.get('email')]
@@ -758,12 +760,13 @@ Be specific and actionable."""
         violation_counts = {}
         try:
             for email in user_emails:
-                user = self.user_repo.get_user_by_email(email, system_name)
+                user = self.user_repo.get_user_by_email(email)  # Fixed: removed invalid system_name parameter
                 if user:
                     violations = self.violation_repo.get_violations_by_user(user.id)
                     violation_counts[email] = len(violations)
+                    logger.debug(f"User {email}: {len(violations)} violations")
         except Exception as e:
-            logger.warning(f"Could not fetch violation counts: {e}")
+            logger.error(f"Could not fetch violation counts: {e}", exc_info=True)
 
         # Format user list
         formatted_users = []

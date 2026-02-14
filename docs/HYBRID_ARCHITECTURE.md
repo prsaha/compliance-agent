@@ -739,6 +739,244 @@ request_exception_approval(
 
 ---
 
+## Phase 6: Reporting & Demo Enhancements (2026-02-14) ✅
+
+### Overview
+
+Enhanced reporting capabilities with multiple export formats and demo user management for external presentations without company branding.
+
+### Architecture Components
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    REPORTING LAYER                               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │           Violation Report Service                        │  │
+│  │                                                           │  │
+│  │  • generate_markdown_table()                             │  │
+│  │  • generate_detailed_table()                             │  │
+│  │  • export_to_excel()                                     │  │
+│  │  • export_to_csv()                                       │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                          │                                       │
+│                          ▼                                       │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │              Format Handlers                              │  │
+│  │                                                           │  │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐     │  │
+│  │  │   Table     │  │  Concise    │  │  Detailed   │     │  │
+│  │  │  (default)  │  │  (brief)    │  │  (full)     │     │  │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘     │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    DEMO USER SYSTEM                              │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  create_demo_user.py                                            │
+│  ├─ sanitize_text()        # Remove "Fivetran" branding        │
+│  ├─ sanitize_json_field()  # Clean role names                  │
+│  ├─ create_sanitized_roles() # Create demo roles               │
+│  └─ create_demo_user()     # Copy & sanitize user data         │
+│                                                                  │
+│  Real User          ──────>   Demo User                         │
+│  robin.turner@            test_user@xyz.com                     │
+│  fivetran.com                                                   │
+│  Fivetran - Controller    Controller (sanitized)               │
+│  384 violations           384 violations (sanitized data)       │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### New MCP Tools (1)
+
+#### 1. generate_violation_report
+```python
+{
+  "name": "generate_violation_report",
+  "arguments": {
+    "user_email": "test_user@xyz.com",
+    "format": "excel",  # markdown, detailed, excel, csv
+    "limit": 5,         # for markdown/detailed
+    "export_path": "/path/to/file.xlsx"  # optional
+  }
+}
+```
+
+**Outputs**:
+- **Markdown**: Top N violations in table format
+- **Detailed**: Role conflict matrix
+- **Excel**: Full report with color-coded severity, metadata sheet
+- **CSV**: Basic export for external analysis
+
+### Enhanced Tools
+
+#### get_user_violations (Updated)
+- **New Default**: `format=table` (was `detailed`)
+- **New Formats**:
+  - `table` - Structured markdown tables with summary, top violations, actions
+  - `concise` - Ultra-brief format for quick analysis
+  - `detailed` - Original full violation list
+
+**Table Format Example**:
+```markdown
+📊 Summary
+
+| Metric | Value |
+|--------|-------|
+| Total Violations | 384 |
+| 🔴 CRITICAL | 96 |
+| 🟠 HIGH | 128 |
+| 🟡 MEDIUM | 160 |
+
+⚠️ Top 3 Critical Conflicts
+
+| # | Violation Type | Risk Score | Impact |
+|---|----------------|------------|--------|
+| 1 | Payroll Processing | 100/100 | Fraud risk |
+| 2 | Journal Entry | 100/100 | Maker-checker bypass |
+| 3 | AP Entry | 100/100 | Fraud risk |
+
+✅ Action Required
+
+| Priority | Action | Impact |
+|----------|--------|--------|
+| 🔴 HIGH | Remove Administrator role | Eliminates bypasses |
+```
+
+### Demo User Management
+
+**Purpose**: Create sanitized test users for external demos
+
+**Script**: `scripts/create_demo_user.py`
+
+**Sanitization Rules**:
+```python
+{
+  "Fivetran - ": "",              # Remove role prefix
+  "Fivetran : ": "",              # Remove dept prefix
+  "fivetran.com": "xyz.com",      # Sanitize domain
+  "Fivetran": "Company"           # Replace company name
+}
+```
+
+**Usage**:
+```bash
+# Create test_user@xyz.com from robin.turner@fivetran.com
+python3 scripts/create_demo_user.py --create
+
+# Create custom demo user
+python3 scripts/create_demo_user.py --create \
+  --name "Jane Doe" \
+  --email "jane.doe@acme.com" \
+  --source "chase.roles@fivetran.com"
+
+# Delete demo user
+python3 scripts/create_demo_user.py --delete
+```
+
+### Bug Fixes
+
+#### Issue 1: Department Filtering
+**Problem**: Exact match failed for hierarchical department names
+```python
+# Before: ❌
+if dept.lower() == filter.lower()  # "Finance" != "Fivetran : G&A : Finance"
+
+# After: ✅
+if filter.lower() in dept.lower()  # "Finance" in "Fivetran : G&A : Finance"
+```
+**Impact**: Finance department now returns 76 users instead of 0
+
+#### Issue 2: Violation Counts Always Zero
+**Problem**: Wrong parameter count in `get_user_by_email()` call
+```python
+# Before: ❌
+user = repo.get_user_by_email(email, system_name)  # TypeError
+
+# After: ✅
+user = repo.get_user_by_email(email)  # Correct signature
+```
+**Impact**: Violation counts now display correctly (Robin Turner: 384 not 0)
+
+### Key Features
+
+1. **Multi-Format Reports**
+   - Markdown tables for console/chat
+   - Excel with formatting for audits
+   - CSV for data analysis
+
+2. **Demo User System**
+   - Brand-neutral test data
+   - Perfect for external presentations
+   - Maintains realistic violation patterns
+
+3. **Tabular Analysis**
+   - Default table format for better UX
+   - Executive-friendly summaries
+   - Screenshot-ready tables
+
+4. **Enhanced Department Filtering**
+   - Partial/substring matching
+   - Works with hierarchical names
+   - More intuitive queries
+
+### Usage Examples
+
+```python
+# Generate Excel report
+await generate_violation_report_handler(
+    user_email="test_user@xyz.com",
+    format="excel"
+)
+# → /tmp/compliance_reports/violations_Test_User_20260214.xlsx
+
+# Get violations in table format (default)
+await get_user_violations_handler(
+    system_name="netsuite",
+    user_identifier="test_user@xyz.com"
+)
+# → Returns markdown tables
+
+# Concise format for quick check
+await get_user_violations_handler(
+    system_name="netsuite",
+    user_identifier="test_user@xyz.com",
+    format="concise"
+)
+# → Brief text summary
+```
+
+### Implementation Details
+
+**Files**:
+- `services/violation_report_service.py` - Report generation (400 lines)
+- `scripts/create_demo_user.py` - Demo user management (350 lines)
+- `mcp/mcp_tools.py` - Enhanced handlers with table formatting
+- `mcp/orchestrator.py` - Bug fixes (2 lines changed)
+- `docs/DEMO_USER_GUIDE.md` - Demo user documentation
+
+**Dependencies**:
+- `pandas` - DataFrame for Excel export
+- `openpyxl` - Excel file formatting
+
+### Status
+
+- **Phase**: 6 (Reporting & Demo Enhancements)
+- **Status**: ✅ COMPLETE (2026-02-14)
+- **Tools Added**: 1 (generate_violation_report)
+- **Tools Enhanced**: 1 (get_user_violations - added table format)
+- **Bug Fixes**: 2 (department filtering, violation counts)
+- **Documentation**: Complete (DEMO_USER_GUIDE.md, DEPARTMENT_FILTERING_FIX.md)
+- **Total MCP Tools**: 34
+
+---
+
 ## Summary
 
 **Core System (LangChain):**

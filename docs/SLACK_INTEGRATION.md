@@ -49,16 +49,43 @@ Both use the SAME MCP server! ✅
 
 ---
 
+## Quick Start: Local Development (5 minutes)
+
+**NEW**: Want to test the Slack bot locally without AWS? Use our Socket Mode integration!
+
+```bash
+# 1. Install dependencies
+pip install -r requirements-slack.txt
+
+# 2. Follow setup guide
+cat SLACK_BOT_SETUP.md
+
+# 3. Run locally
+python slack_bot_local.py
+```
+
+**Files:**
+- `slack_bot_local.py` - Socket Mode bot (runs on your desktop)
+- `SLACK_BOT_SETUP.md` - 5-minute setup guide
+- `test_slack_bot.py` - Verify your configuration
+
+**Benefits:** No AWS, no webhooks, no public URL, instant updates, $0 cost
+
+**See:** `SLACK_BOT_SETUP.md` for complete local setup instructions.
+
+---
+
 ## Table of Contents
 
-1. [Integration Options](#integration-options)
-2. [Option 1: Slack + Claude API (Recommended)](#option-1-slack--claude-api-recommended)
-3. [Option 2: Direct Slack Integration](#option-2-direct-slack-integration)
-4. [Option 3: Slack Slash Commands](#option-3-slack-slash-commands)
-5. [Deployment Guide](#deployment-guide)
-6. [Security Considerations](#security-considerations)
-7. [Usage Examples](#usage-examples)
-8. [Cost Analysis](#cost-analysis)
+1. [Quick Start: Local Development](#quick-start-local-development) ⚡ NEW
+2. [Integration Options](#integration-options)
+3. [Option 1: Slack + Claude API (Recommended)](#option-1-slack--claude-api-recommended)
+4. [Option 2: Direct Slack Integration](#option-2-direct-slack-integration)
+5. [Option 3: Slack Slash Commands](#option-3-slack-slash-commands)
+6. [Deployment Guide](#deployment-guide)
+7. [Security Considerations](#security-considerations)
+8. [Usage Examples](#usage-examples)
+9. [Cost Analysis](#cost-analysis)
 
 ---
 

@@ -91,13 +91,14 @@ The **Model Context Protocol (MCP)** is Anthropic's open protocol for connecting
 │                      MCP SERVER (Python)                         │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │              Tool Registry & Router (14 tools)            │  │
+│  │              Tool Registry & Router (34 tools)            │  │
 │  │  • list_systems()                                        │  │
 │  │  • perform_access_review(system_name)                   │  │
-│  │  • get_user_violations(user_id)                         │  │
+│  │  • get_user_violations(user_id) - table format default  │  │
+│  │  • generate_violation_report() - Excel/CSV export       │  │
 │  │  • remediate_violation(violation_id)                    │  │
 │  │  • schedule_review(system, frequency)                   │  │
-│  │  • initialize_session(my_email) ✅ NEW                  │  │
+│  │  • initialize_session(my_email)                         │  │
 │  │  • check_my_approval_authority(my_email) ✅ NEW        │  │
 │  │  • request_exception_approval(...) ✅ NEW               │  │
 │  └──────────────────────┬───────────────────────────────────┘  │
@@ -1660,6 +1661,122 @@ LOW (<40):      Manager, Director, Supervisor
 - Complete documentation
 - Trained users
 - Operational runbooks
+
+---
+
+### Phase 6: Reporting & Demo Enhancements (Week 9) ✅ **COMPLETE**
+
+**Goal**: Enhanced reporting capabilities and demo user management
+
+**Status**: ✅ **COMPLETED 2026-02-14**
+
+#### 1. Violation Report Generation ✅
+
+**Tool**: `generate_violation_report`
+
+**Features**:
+- Multiple output formats:
+  - **Markdown** - Top N violations in table format for console
+  - **Detailed** - Role conflict matrix with full context
+  - **Excel** - Full audit report with color-coded severity and metadata
+  - **CSV** - Basic data export for external analysis
+- Automatic file generation in `/tmp/compliance_reports/`
+- Professional Excel formatting with:
+  - Color-coded severity (Red/Orange/Yellow/Green)
+  - Summary metadata sheet
+  - Auto-sized columns
+  - Header formatting
+
+**Implementation**:
+- `services/violation_report_service.py` - Report generation logic
+- `generate_violation_report_handler()` - MCP tool handler
+- Requires: `pandas`, `openpyxl` for Excel export
+
+#### 2. Tabular Violation Analysis ✅
+
+**Enhancement**: Updated `get_user_violations` tool
+
+**New Formats**:
+- **Table** (default) - Structured markdown tables:
+  - Summary metrics table (total, severity breakdown)
+  - Top 3 critical conflicts table (violation type, risk score, impact)
+  - Action required table (priority, action, impact)
+- **Concise** - Ultra-brief text format for quick analysis
+- **Detailed** - Original full violation list format
+
+**Default Format**: Changed from `detailed` to `table` for better UX
+
+**Use Cases**:
+- Executive summaries
+- Screenshots for presentations
+- External demo scenarios
+- Quick compliance checks
+
+#### 3. Demo User System ✅
+
+**Purpose**: Sanitized test users for external demos without company branding
+
+**Script**: `scripts/create_demo_user.py`
+
+**Features**:
+- Copies user profile from source user (e.g., Robin Turner)
+- Sanitizes all data:
+  - Removes "Fivetran -" prefix from role names
+  - Changes `fivetran.com` → `xyz.com` in emails
+  - Removes "Fivetran :" from department names
+  - Replaces "Fivetran" → "Company" in text fields
+- Creates sanitized roles if they don't exist
+- Copies all violations with sanitized role references
+- Supports custom names/emails for different demo scenarios
+
+**Commands**:
+```bash
+# Create demo user
+python3 scripts/create_demo_user.py --create
+
+# Create custom demo user
+python3 scripts/create_demo_user.py --create \
+  --name "Jane Doe" \
+  --email "jane.doe@acme.com" \
+  --source "robin.turner@fivetran.com"
+
+# Delete demo user
+python3 scripts/create_demo_user.py --delete
+```
+
+**Demo User**: `test_user@xyz.com`
+- Department: G&A : Finance (no "Fivetran")
+- Roles: Controller, Administrator, NetSuite 360 (sanitized)
+- Violations: 384 (same as source, sanitized data)
+
+**Documentation**: `docs/DEMO_USER_GUIDE.md`
+
+#### 4. Bug Fixes ✅
+
+**Issue 1: Department Filtering - Exact Match**
+- **Problem**: `list_all_users` used exact match for departments
+- **Impact**: Query for "Finance" didn't match "Fivetran : G&A : Finance"
+- **Fix**: Changed to partial/substring matching
+- **File**: `mcp/orchestrator.py` line 751
+- **Result**: "Finance" now matches 76 users
+
+**Issue 2: Violation Count Always Zero**
+- **Problem**: `get_user_by_email(email, system_name)` - wrong parameter count
+- **Impact**: All users showed 0 violations in filtered lists
+- **Fix**: Removed invalid `system_name` parameter
+- **File**: `mcp/orchestrator.py` line 763
+- **Result**: Violation counts now display correctly (Robin Turner: 384)
+
+**Deliverables**:
+- ✅ 1 new MCP tool (`generate_violation_report`)
+- ✅ 3 output formats (markdown, Excel, CSV)
+- ✅ Tabular analysis format (default)
+- ✅ Demo user creation script
+- ✅ Demo user guide documentation
+- ✅ 2 critical bug fixes
+- ✅ Department filtering enhancement
+
+**Tool Count**: Now **34 total tools** (33 compliance + 1 reporting)
 
 ---
 
