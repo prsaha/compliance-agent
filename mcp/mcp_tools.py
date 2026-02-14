@@ -3927,6 +3927,23 @@ async def request_exception_approval_handler(
             exception_details
         )
 
+        # Check if authentication failed
+        if result is None:
+            return f"""❌ **Authentication Failed**
+
+Unable to authenticate user: {requester_email}
+
+**Possible Issues:**
+• Email address not found in system
+• User account is not active
+• User does not have NetSuite access
+
+**Next Steps:**
+• Verify email address is correct
+• Ensure user has an active NetSuite account
+• Contact system administrator if issue persists
+"""
+
         # Format response based on outcome
         if result['approved']:
             # User is authorized
@@ -4008,7 +4025,8 @@ async def request_exception_approval_handler(
             else:
                 output += f"**Jira Integration:**\n"
                 output += f"• Jira not configured (no ticket created)\n"
-                output += f"• Please contact {result['approver']['name']} directly\n"
+                if result.get('approver'):
+                    output += f"• Please contact {result['approver']['name']} directly\n"
                 output += f"• Manual approval required before recording exception\n"
 
         output += f"\n**Business Justification:**\n{business_justification}\n"

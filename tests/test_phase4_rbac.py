@@ -29,7 +29,7 @@ async def test_check_authority_cfo():
     print("="*80)
 
     result = await check_my_approval_authority_handler(
-        my_email="test.cfo@fivetran.com",
+        my_email="kalor@fivetran.com",  # Real CFO user
         check_for_risk_score=85.0  # CRITICAL level
     )
 
@@ -43,7 +43,7 @@ async def test_check_authority_controller():
     print("="*80)
 
     result = await check_my_approval_authority_handler(
-        my_email="abbey.skuse@fivetran.com",
+        my_email="robin.turner@fivetran.com",  # Real Controller user
         check_for_risk_score=65.0  # HIGH level
     )
 
@@ -57,7 +57,7 @@ async def test_check_authority_no_score():
     print("="*80)
 
     result = await check_my_approval_authority_handler(
-        my_email="abbey.skuse@fivetran.com"
+        my_email="robin.turner@fivetran.com"  # Real Controller user
     )
 
     print(result)
@@ -70,7 +70,7 @@ async def test_approval_request_authorized():
     print("="*80)
 
     result = await request_exception_approval_handler(
-        requester_email="abbey.skuse@fivetran.com",
+        requester_email="robin.turner@fivetran.com",  # Controller - can approve HIGH
         user_identifier="test.user@fivetran.com",
         user_name="Test User",
         role_names=["Fivetran - Tax Manager", "Fivetran - Controller"],
@@ -101,7 +101,7 @@ async def test_approval_request_unauthorized():
     print("="*80)
 
     result = await request_exception_approval_handler(
-        requester_email="revenue.manager@fivetran.com",
+        requester_email="hanz.lizardo@fivetran.com",  # Billing Manager - cannot approve CRITICAL
         user_identifier="another.user@fivetran.com",
         user_name="Another User",
         role_names=["Fivetran - Revenue Recognition Manager", "Fivetran - AR Processing"],
@@ -132,7 +132,7 @@ async def test_approval_request_no_auto_approve():
     print("="*80)
 
     result = await request_exception_approval_handler(
-        requester_email="abbey.skuse@fivetran.com",
+        requester_email="robin.turner@fivetran.com",  # Controller - can approve MEDIUM
         user_identifier="check.user@fivetran.com",
         user_name="Check User",
         role_names=["Fivetran - GL Accounting", "Fivetran - AP Processing"],

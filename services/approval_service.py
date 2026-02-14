@@ -29,29 +29,47 @@ class ApprovalService:
     APPROVAL_AUTHORITY_MAP = {
         "CRITICAL": [
             "Fivetran - CFO",
+            "CFO",  # Also accept non-prefixed version
             "Fivetran - Chief Financial Officer",
-            "Fivetran - Audit Committee Member"
+            "Chief Financial Officer",
+            "Fivetran - Audit Committee Member",
+            "Audit Committee Member"
         ],
         "HIGH": [
             "Fivetran - CFO",
+            "CFO",
             "Fivetran - Controller",
+            "Controller",
             "Fivetran - Chief Financial Officer",
+            "Chief Financial Officer",
             "Fivetran - VP Finance",
-            "Fivetran - Audit Committee Member"
+            "VP Finance",
+            "Fivetran - Audit Committee Member",
+            "Audit Committee Member"
         ],
         "MEDIUM": [
             "Fivetran - CFO",
+            "CFO",
             "Fivetran - Controller",
+            "Controller",
             "Fivetran - Director",
+            "Director",
             "Fivetran - VP Finance",
-            "Fivetran - Compliance Officer"
+            "VP Finance",
+            "Fivetran - Compliance Officer",
+            "Compliance Officer"
         ],
         "LOW": [
             "Fivetran - CFO",
+            "CFO",
             "Fivetran - Controller",
+            "Controller",
             "Fivetran - Director",
+            "Director",
             "Fivetran - Manager",
-            "Fivetran - Compliance Officer"
+            "Manager",
+            "Fivetran - Compliance Officer",
+            "Compliance Officer"
         ]
     }
 
@@ -84,6 +102,7 @@ class ApprovalService:
         """
         try:
             from repositories.user_repository import UserRepository
+            from models.database import UserStatus
 
             user_repo = UserRepository(self.session)
             user = user_repo.get_user_by_email(email)
@@ -92,7 +111,7 @@ class ApprovalService:
                 logger.warning(f"User not found: {email}")
                 return None
 
-            if user.status != "ACTIVE":
+            if user.status != UserStatus.ACTIVE:
                 logger.warning(f"User not active: {email} (status: {user.status})")
                 return None
 
