@@ -4407,6 +4407,286 @@ def tool_with_detailed_report_handler(params):
 
 ---
 
+### Issue #19: Phase 4 RBAC Implementation - Enum Comparison and Role Name Matching
+
+**Date:** 2026-02-13
+**Component:** RBAC and Approval Workflows (Phase 4)
+**Severity:** Medium (Blocked authentication and testing)
+**Status:** ✅ Resolved
+
+#### Problem Statement
+
+During Phase 4 RBAC implementation, two critical bugs prevented user authentication and approval authority validation:
+
+1. **User Status Enum Comparison Failure:**
+   - Users with `status='ACTIVE'` (stored as string in database) failed authentication
+   - Code compared `user.status != "ACTIVE"` but `user.status` was `UserStatus.ACTIVE` enum
+   - All users were rejected as "not active" despite being active
+
+2. **Role Name Mismatch:**
+   - Database had role names like "CFO", "Controller" without "Fivetran -" prefix
+   - APPROVAL_AUTHORITY_MAP only checked for "Fivetran - CFO", "Fivetran - Controller"
+   - CFO user (kalor@fivetran.com) had "CFO" role but couldn't approve ANY risk level
+   - Resulted in complete authorization failure for non-prefixed roles
+
+3. **Null Result Handling:**
+   - When authentication failed, `process_approval_request()` returned `None`
+   - Handler tried to access `result['approved']` causing TypeError
+   - Error: `'NoneType' object is not subscriptable`
+
+#### Root Cause Analysis
+
+**Bug #1: Enum vs String Comparison**
+```python
+# ❌ WRONG: Comparing enum to string
+if user.status != "ACTIVE":  # Always True (enum != string)
+    logger.warning(f"User not active: {email}")
+    return None
+
+# ✅ CORRECT: Compare enum to enum
+from models.database import UserStatus
+if user.status != UserStatus.ACTIVE:  # Proper enum comparison
+    logger.warning(f"User not active: {email}")
+    return None
+```
+
+**Bug #2: Role Name Prefix Assumption**
+```python
+# ❌ WRONG: Only checks prefixed names
+APPROVAL_AUTHORITY_MAP = {
+    "CRITICAL": ["Fivetran - CFO", ...]  # Misses "CFO" without prefix
+}
+
+# ✅ CORRECT: Accept both variants
+APPROVAL_AUTHORITY_MAP = {
+    "CRITICAL": [
+        "Fivetran - CFO",
+        "CFO",  # Also accept non-prefixed version
+        ...
+    ]
+}
+```
+
+**Bug #3: Missing None Check**
+```python
+# ❌ WRONG: Assumes result always has data
+result = approval_service.process_approval_request(...)
+if result['approved']:  # TypeError if result is None
+    ...
+
+# ✅ CORRECT: Check for None first
+result = approval_service.process_approval_request(...)
+if result is None:
+    return "Authentication Failed message"
+if result['approved']:  # Safe to access now
+    ...
+```
+
+#### Solution Implementation
+
+**Fix 1: Import and Use Enum**
+```python
+# services/approval_service.py
+from models.database import UserStatus
+
+def authenticate_user(self, email: str):
+    user = user_repo.get_user_by_email(email)
+    if not user:
+        return None
+    if user.status != UserStatus.ACTIVE:  # ✅ Enum comparison
+        return None
+    return user_info
+```
+
+**Fix 2: Add Non-Prefixed Role Names**
+```python
+# services/approval_service.py
+APPROVAL_AUTHORITY_MAP = {
+    "CRITICAL": [
+        "Fivetran - CFO",
+        "CFO",  # ✅ Accept both versions
+        "Fivetran - Chief Financial Officer",
+        "Chief Financial Officer",  # ✅ Accept both versions
+        ...
+    ],
+    ...
+}
+```
+
+**Fix 3: Add None Validation**
+```python
+# mcp/mcp_tools.py
+result = approval_service.process_approval_request(...)
+
+# ✅ Check for None first
+if result is None:
+    return """❌ **Authentication Failed**
+Unable to authenticate user: {requester_email}
+...
+"""
+
+# Now safe to access result keys
+if result['approved']:
+    ...
+```
+
+**Fix 4: Safe Field Access**
+```python
+# Use .get() for optional fields
+if result.get('approver'):  # ✅ Safe if approver is None
+    output += f"Contact {result['approver']['name']}\n"
+```
+
+#### Testing Impact
+
+**Before Fixes:**
+```
+TEST 1: Check Authority - CFO User
+❌ User not found or inactive: kalor@fivetran.com
+
+TEST 2: Check Authority - Controller User
+❌ User not found or inactive: robin.turner@fivetran.com
+
+TEST 4: Request Approval - Authorized User
+❌ Error processing approval request: 'NoneType' object is not subscriptable
+```
+
+**After Fixes:**
+```
+TEST 1: Check Authority - CFO User
+✅ Kalor Lewis authenticated
+✅ Approval Authority: CRITICAL (All Levels)
+✅ Can approve: LOW/MEDIUM/HIGH/CRITICAL
+
+TEST 2: Check Authority - Controller User
+✅ Robin Turner authenticated
+✅ Approval Authority: HIGH (+ MEDIUM/LOW)
+✅ Can approve: LOW/MEDIUM/HIGH
+
+TEST 4: Request Approval - Authorized User
+✅ Authorization confirmed
+✅ Auto-approve workflow triggered
+```
+
+#### Files Modified
+
+**services/approval_service.py:**
+```python
+# Line 86: Import UserStatus enum
+from models.database import UserStatus
+
+# Line 95: Fix status comparison
+if user.status != UserStatus.ACTIVE:  # Was: != "ACTIVE"
+
+# Lines 30-56: Add non-prefixed role names
+APPROVAL_AUTHORITY_MAP = {
+    "CRITICAL": [
+        "Fivetran - CFO", "CFO",  # Added non-prefixed
+        ...
+    ],
+    ...
+}
+```
+
+**mcp/mcp_tools.py:**
+```python
+# Lines 3930-3944: Add None check
+if result is None:
+    return authentication_failed_message
+
+# Line 4011: Safe field access
+if result.get('approver'):  # Was: result['approver']
+    output += f"Contact {result['approver']['name']}\n"
+```
+
+**tests/test_phase4_rbac.py:**
+```python
+# Updated test users from fake to real database users:
+- "test.cfo@fivetran.com" → "kalor@fivetran.com" (Real CFO)
+- "abbey.skuse@fivetran.com" → "robin.turner@fivetran.com" (Real Controller)
+- "revenue.manager@fivetran.com" → "hanz.lizardo@fivetran.com" (Real Manager)
+```
+
+#### Lessons Learned
+
+1. **Enum Comparisons Require Enum Types:**
+   - SQLAlchemy converts string DB values to Python enums
+   - Always import and compare against enum types, not strings
+   - `user.status != UserStatus.ACTIVE` ✅ NOT `user.status != "ACTIVE"` ❌
+
+2. **Database Data Variance:**
+   - Never assume consistent naming conventions in real data
+   - Support both "Fivetran - CFO" and "CFO" role name formats
+   - Database may have legacy names, manual entries, or system variations
+   - Always check actual data before hardcoding assumptions
+
+3. **Null Safety in API Boundaries:**
+   - Authentication can fail for many reasons (user not found, inactive, no roles)
+   - Always check for None before accessing dictionary keys
+   - Use `.get()` for optional fields to prevent KeyError
+   - Return clear error messages for authentication failures
+
+4. **Test Data Reality:**
+   - Use real database users in tests, not fake emails
+   - Fake users reveal authentication logic but not authorization logic
+   - Real users expose role name mismatches and data inconsistencies
+   - Integration tests with production-like data are invaluable
+
+5. **Error Message Design:**
+   - "User not active: email (status: UserStatus.ACTIVE)" is confusing
+   - The enum repr shows in logs but comparison was wrong
+   - Good error messages should include the actual comparison values
+   - Consider logging both `user.status` and `user.status.value` for clarity
+
+#### Prevention Strategy
+
+1. **Type Checking:**
+   - Use mypy or pyright for static type checking
+   - Enum comparisons will be caught: `UserStatus != str` type mismatch
+   - Add to pre-commit hooks
+
+2. **Database Data Audit:**
+   - Before implementing RBAC, audit actual role names in database
+   - Document all role name variants found
+   - Design authority maps to handle all variants
+   - Consider normalization if too many variants exist
+
+3. **Defensive Coding:**
+   - Always validate external data (database, API responses)
+   - Check for None before dictionary access
+   - Use `.get()` with defaults for optional fields
+   - Log authentication failures with full context
+
+4. **Integration Testing:**
+   - Test with real database users, not mocks
+   - Cover edge cases: inactive users, users without roles, non-standard role names
+   - Test authentication failure paths explicitly
+
+#### Related Issues
+
+- Issue #14: Enum value case sensitivity (uppercase DB values)
+- Issue #17: Python syntax (True/False vs true/false)
+- Both issues highlight Python type system subtleties
+
+#### Impact
+
+**Before Fix:**
+- ❌ 100% of users failed authentication (enum comparison bug)
+- ❌ CFO couldn't approve anything (role name mismatch)
+- ❌ All 6 tests failed
+- ❌ Phase 4 RBAC completely non-functional
+
+**After Fix:**
+- ✅ All users authenticate correctly
+- ✅ CFO can approve all risk levels
+- ✅ Controller can approve appropriate levels
+- ✅ All 6 tests passing
+- ✅ Phase 4 RBAC fully operational
+
+**Time to Resolution:** 45 minutes (debugging + fixes + testing)
+
+---
+
 ## Summary
 
 ### Key Takeaways
@@ -4428,6 +4708,10 @@ def tool_with_detailed_report_handler(params):
 15. **Foreign key integrity** - Always create parent records before children; separate critical operations from optional ones
 16. **Prevention implementation** - Documented prevention strategies mean nothing without implementation; Issue #10 recurred as Issue #17
 17. **Agent Response pattern** - Separate agent analysis (comprehensive) from LLM response (conversational); use file attachments for detailed reports
+18. **Enum comparisons** - SQLAlchemy converts DB strings to enums; compare enums to enums, not enums to strings
+19. **Database data variance** - Never hardcode assumptions about naming conventions; support all variants found in real data
+20. **Null safety at boundaries** - Always validate authentication/authorization results before accessing; use .get() for optional fields
+21. **Test with real data** - Integration tests with production-like data expose issues that mocks hide
 
 ### Impact Metrics
 

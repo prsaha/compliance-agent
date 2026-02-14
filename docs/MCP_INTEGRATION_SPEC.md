@@ -91,12 +91,15 @@ The **Model Context Protocol (MCP)** is Anthropic's open protocol for connecting
 │                      MCP SERVER (Python)                         │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │              Tool Registry & Router                       │  │
+│  │              Tool Registry & Router (14 tools)            │  │
 │  │  • list_systems()                                        │  │
 │  │  • perform_access_review(system_name)                   │  │
 │  │  • get_user_violations(user_id)                         │  │
 │  │  • remediate_violation(violation_id)                    │  │
 │  │  • schedule_review(system, frequency)                   │  │
+│  │  • initialize_session(my_email) ✅ NEW                  │  │
+│  │  • check_my_approval_authority(my_email) ✅ NEW        │  │
+│  │  • request_exception_approval(...) ✅ NEW               │  │
 │  └──────────────────────┬───────────────────────────────────┘  │
 │                         │                                        │
 │                         ▼                                        │
@@ -1555,7 +1558,75 @@ class NetSuiteConnector:
 
 ---
 
-### Phase 4: Testing & Documentation (Week 7-8)
+### Phase 4: RBAC and Approval Workflows (Week 7) ✅ **COMPLETE**
+
+**Goal**: Implement role-based access control and intelligent approval routing
+
+**Status**: ✅ **COMPLETED 2026-02-13**
+
+1. **User Authentication & Authorization** ✅
+   - [x] Implement ApprovalService for RBAC logic
+   - [x] User authentication against active NetSuite users
+   - [x] Role validation and authority checking
+   - [x] Risk-based approval levels (LOW/MEDIUM/HIGH/CRITICAL)
+   - [x] Write comprehensive tests
+
+2. **Session Initialization** ✅
+   - [x] Implement `initialize_session` tool
+   - [x] Personalized welcome message with user profile
+   - [x] Display approval authority matrix
+   - [x] Show available actions based on permissions
+   - [x] Prevent unauthorized access attempts
+
+3. **Approval Authority Tools** ✅
+   - [x] Implement `check_my_approval_authority` tool
+   - [x] Authority matrix for all risk levels
+   - [x] Specific risk score validation
+   - [x] Manager chain lookup capability
+   - [x] Write tests for all authority levels
+
+4. **Exception Approval Workflow** ✅
+   - [x] Implement `request_exception_approval` tool
+   - [x] Automatic RBAC validation
+   - [x] Manager chain traversal for escalations
+   - [x] Jira ticket creation for unauthorized requests
+   - [x] Auto-approve for authorized users
+   - [x] Comprehensive error handling
+
+5. **Bug Fixes & Enhancements** ✅
+   - [x] Fix user status enum comparison
+   - [x] Support non-prefixed role names (CFO, Controller, etc.)
+   - [x] Add None checks for authentication failures
+   - [x] Safe field access for optional data
+   - [x] Update tests with real database users
+
+**Deliverables**: ✅ **ALL COMPLETE**
+- 3 new MCP tools (initialize_session, check_my_approval_authority, request_exception_approval)
+- ApprovalService with 600+ lines of RBAC logic
+- 6 integration tests (all passing)
+- Complete documentation (PHASE4_COMPLETE.md)
+- Bug fixes and code quality improvements
+
+**Approval Authority Map**:
+```python
+CRITICAL (≥75): CFO, Audit Committee only
+HIGH (≥60):     CFO, Controller, VP Finance, CAO
+MEDIUM (≥40):   Controller, Director, Compliance Officer
+LOW (<40):      Manager, Director, Supervisor
+```
+
+**Key Features**:
+- ✅ Prevents self-approval (conflict of interest)
+- ✅ Validates against NetSuite roles
+- ✅ Automatic routing to authorized approvers
+- ✅ Manager chain lookup (up to 5 levels)
+- ✅ Jira integration for escalations
+- ✅ Comprehensive audit trail
+- ✅ Personalized login experience
+
+---
+
+### Phase 5: Testing & Documentation (Week 8)
 
 **Goal**: Production readiness
 
@@ -1601,10 +1672,15 @@ class NetSuiteConnector:
    - OAuth 2.0 for external systems
    - Token rotation every 90 days
 
-2. **Authorization**
-   - Role-based access control (RBAC)
-   - User can only see their own violations
-   - Admins can see all violations
+2. **Authorization** ✅ **IMPLEMENTED**
+   - Role-based access control (RBAC) for exception approvals
+   - 4-tier approval authority (CRITICAL/HIGH/MEDIUM/LOW)
+   - CFO/Controller/Director/Manager role validation
+   - Users can only approve exceptions within their authority level
+   - Automatic escalation to authorized approvers
+   - Manager chain traversal for routing
+   - Prevents self-approval (conflict of interest)
+   - Session initialization shows user's permissions
    - Audit all authorization decisions
 
 3. **Data Encryption**
