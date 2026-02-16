@@ -433,7 +433,9 @@ class ComplianceOrchestrator:
             "violations": formatted_violations,
             "ai_analysis": ai_analysis,
             "department": user.department,
-            "is_active": user.status.value == "ACTIVE"
+            "status": user.status.value if user.status else 'UNKNOWN',
+            "is_active": user.status.value == "ACTIVE" if user.status else False,
+            "synced_at": user.synced_at.strftime('%Y-%m-%d %H:%M:%S') if user.synced_at else 'Unknown'
         }
 
     def remediate_violation_sync(

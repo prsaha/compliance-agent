@@ -1035,6 +1035,18 @@ def _format_violations_table(result: Dict[str, Any], include_ai_analysis: bool =
     """Format violations as tables (concise tabular format)"""
     output = f"**SOD Violation Analysis: {result['user_name']}**\n\n"
 
+    # User Status - Show first
+    user_status = result.get('status', 'UNKNOWN')
+    is_active = result.get('is_active', False)
+    synced_at = result.get('synced_at', 'Unknown')
+
+    status_emoji = "✅" if is_active else "❌"
+    status_text = "ACTIVE" if is_active else "INACTIVE"
+
+    output += f"**👤 User Status**\n\n"
+    output += f"{status_emoji} **{status_text}** in NetSuite (as of {synced_at})\n\n"
+    output += "---\n\n"
+
     # Summary table
     output += "**📊 Summary**\n\n"
     output += "| Metric | Value |\n"
@@ -1107,6 +1119,15 @@ def _format_violations_table(result: Dict[str, Any], include_ai_analysis: bool =
 
 def _format_violations_concise(result: Dict[str, Any]) -> str:
     """Format violations in concise format"""
+    # User Status - Show first
+    is_active = result.get('is_active', False)
+    synced_at = result.get('synced_at', 'Unknown')
+    status_emoji = "✅" if is_active else "❌"
+    status_text = "ACTIVE" if is_active else "INACTIVE"
+
+    output = f"**{result['user_name']}** ({result['email']})\n\n"
+    output += f"{status_emoji} **{status_text}** in NetSuite (as of {synced_at})\n\n"
+
     # Count by severity
     severity_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}
     for v in result['violations']:
@@ -1114,7 +1135,6 @@ def _format_violations_concise(result: Dict[str, Any]) -> str:
         if severity in severity_counts:
             severity_counts[severity] += 1
 
-    output = f"**{result['user_name']}** ({result['email']})\n\n"
     output += f"**{result['violation_count']} violations** | "
     output += f"{severity_counts['CRITICAL']} CRITICAL | "
     output += f"{severity_counts['HIGH']} HIGH | "
@@ -1182,13 +1202,22 @@ async def get_user_violations_handler(
         else:
             # Default detailed format
             output = f"**{result['user_name']} - Violation Report**\n\n"
+
+            # User Status - Show first
+            is_active = result.get('is_active', False)
+            synced_at = result.get('synced_at', 'Unknown')
+            status_emoji = "✅" if is_active else "❌"
+            status_text = "ACTIVE" if is_active else "INACTIVE"
+            output += f"{status_emoji} **{status_text}** in NetSuite (as of {synced_at})\n\n"
+
+            # Then show other details
             output += f"📧 Email: {result['email']}\n"
             output += f"🏢 System: {result['system']}\n"
             output += f"🎭 Roles ({result['role_count']}): {', '.join(result['roles'])}\n"
             output += f"⚠️  Total Violations: {result['violation_count']}\n"
             if result.get('department'):
                 output += f"📁 Department: {result['department']}\n"
-            output += f"✅ Status: {'Active' if result['is_active'] else 'Inactive'}\n\n"
+            output += "\n"
 
             if result['violations']:
                 output += "**Violations:**\n\n"
