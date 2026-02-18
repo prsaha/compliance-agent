@@ -44,6 +44,8 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 MAX_TOKENS_SLACK = int(os.environ.get("SLACK_MAX_TOKENS", "1024"))
 MAX_HISTORY_TURNS = int(os.environ.get("SLACK_MAX_HISTORY_TURNS", "4"))
 TOOL_OUTPUT_MAX_CHARS = int(os.environ.get("SLACK_TOOL_OUTPUT_MAX_CHARS", "2000"))
+# Rolling summary: compress tool results larger than this with Haiku before storing in history
+ROLLING_SUMMARY_MIN_CHARS = int(os.environ.get("SLACK_ROLLING_SUMMARY_MIN_CHARS", "800"))
 
 # Global variable to store MCP tools (fetched at startup)
 MCP_TOOLS: List[Dict[str, Any]] = []
@@ -210,6 +212,42 @@ def _trim_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return messages
     # Keep the last MAX_HISTORY_TURNS * 2 messages
     return messages[-(MAX_HISTORY_TURNS * 2):]
+
+
+def _compress_tool_result(tool_name: str, content: str, client) -> str:
+    """
+    Rolling summary: use Haiku to compress a large tool result down to key facts
+    before it is stored in the conversation history that Claude re-reads every turn.
+
+    Only fires when content exceeds ROLLING_SUMMARY_MIN_CHARS (default 800 chars).
+    Falls back to the original content on any error.
+    """
+    if len(content) <= ROLLING_SUMMARY_MIN_CHARS:
+        return content
+
+    try:
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Compliance tool '{tool_name}' returned the following result. "
+                    f"Extract ONLY the key facts in ≤150 tokens: "
+                    f"emails, role names, violation counts, risk scores, conflict names, "
+                    f"approval status, and any action items.\n\n{content}"
+                )
+            }],
+            operation="rolling_summary"
+        )
+        summary = resp.content[0].text
+        logger.info(
+            f"Rolling summary: '{tool_name}' compressed {len(content)} → {len(summary)} chars"
+        )
+        return summary
+    except Exception as e:
+        logger.warning(f"Rolling summary failed for '{tool_name}': {e}")
+        return content
 
 
 _THINKING_STAGES = itertools.cycle([
@@ -385,6 +423,10 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
                     # Call MCP tool and sanitize output to control token growth
                     raw_tool_result = call_mcp_tool(tool_name, tool_input)
                     tool_result = _sanitize_tool_output(tool_name, raw_tool_result)
+
+                    # Rolling summary: intelligently compress with Haiku before
+                    # storing in history (avoids re-reading large blobs every turn)
+                    tool_result = _compress_tool_result(tool_name, tool_result, client)
 
                     # Add to results
                     tool_results.append({
