@@ -1810,34 +1810,37 @@ async def query_sod_rules_handler(
         import json
 
         conn = psycopg2.connect(os.getenv('DATABASE_URL'))
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        # Build query
-        query = """
-            SELECT rule_id, rule_name, principle, category1, category2,
-                   base_risk_score, severity, description
-            FROM sod_rules
-            WHERE is_active = true
-        """
-        params = []
+            # Build query
+            query = """
+                SELECT rule_id, rule_name, principle, category1, category2,
+                       base_risk_score, severity, description
+                FROM sod_rules
+                WHERE is_active = true
+            """
+            params = []
 
-        if category1:
-            query += " AND category1 = %s"
-            params.append(category1)
+            if category1:
+                query += " AND category1 = %s"
+                params.append(category1)
 
-        if category2:
-            query += " AND category2 = %s"
-            params.append(category2)
+            if category2:
+                query += " AND category2 = %s"
+                params.append(category2)
 
-        if severity:
-            query += " AND severity = %s"
-            params.append(severity)
+            if severity:
+                query += " AND severity = %s"
+                params.append(severity)
 
-        query += f" LIMIT {limit}"
+            query += " LIMIT %s"
+            params.append(limit)
 
-        cursor.execute(query, params)
-        rules = cursor.fetchall()
-        conn.close()
+            cursor.execute(query, params)
+            rules = cursor.fetchall()
+        finally:
+            conn.close()
 
         if not rules:
             return "No SOD rules found matching the criteria."
@@ -1878,62 +1881,62 @@ async def get_compensating_controls_handler(
         import json
 
         conn = psycopg2.connect(os.getenv('DATABASE_URL'))
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        # Get control package for severity
-        cursor.execute("""
-            SELECT package_id, package_name, description,
-                   included_control_ids, total_risk_reduction,
-                   estimated_annual_cost, implementation_time_hours
-            FROM control_packages
-            WHERE severity_level = %s AND is_active = true
-            LIMIT 1
-        """, (severity,))
+            # Get control package for severity
+            cursor.execute("""
+                SELECT package_id, package_name, description,
+                       included_control_ids, total_risk_reduction,
+                       estimated_annual_cost, implementation_time_hours
+                FROM control_packages
+                WHERE severity_level = %s AND is_active = true
+                LIMIT 1
+            """, (severity,))
 
-        package = cursor.fetchone()
+            package = cursor.fetchone()
 
-        if not package:
+            if not package:
+                return f"No control package found for severity: {severity}"
+
+            pkg_id, pkg_name, desc, control_ids, risk_reduction, cost, hours = package
+
+            output = f"**{pkg_name}** (for {severity} severity)\n\n"
+            if desc:
+                output += f"{desc}\n\n"
+            output += f"**Package Details:**\n"
+            output += f"   • Risk Reduction: {risk_reduction}%\n"
+            if include_cost:
+                output += f"   • Annual Cost: {cost}\n"
+                output += f"   • Implementation Time: {hours} hours\n"
+            output += "\n"
+
+            # Get individual controls
+            if control_ids:
+                cursor.execute("""
+                    SELECT control_id, name, control_type, description,
+                           risk_reduction_percentage, annual_cost_estimate
+                    FROM compensating_controls
+                    WHERE control_id = ANY(%s) AND is_active = true
+                """, (control_ids,))
+
+                controls = cursor.fetchall()
+
+                if controls:
+                    output += f"**Included Controls** ({len(controls)}):\n\n"
+                    for ctrl in controls:
+                        ctrl_id, name, ctrl_type, ctrl_desc, reduction, ctrl_cost = ctrl
+                        output += f"• **{name}** ({ctrl_type})\n"
+                        output += f"  └─ Risk Reduction: {reduction}%"
+                        if include_cost:
+                            output += f" | Cost: {ctrl_cost}"
+                        output += "\n"
+                        if ctrl_desc:
+                            output += f"  └─ {ctrl_desc[:120]}...\n"
+                        output += "\n"
+        finally:
             conn.close()
-            return f"No control package found for severity: {severity}"
 
-        pkg_id, pkg_name, desc, control_ids, risk_reduction, cost, hours = package
-
-        output = f"**{pkg_name}** (for {severity} severity)\n\n"
-        if desc:
-            output += f"{desc}\n\n"
-        output += f"**Package Details:**\n"
-        output += f"   • Risk Reduction: {risk_reduction}%\n"
-        if include_cost:
-            output += f"   • Annual Cost: {cost}\n"
-            output += f"   • Implementation Time: {hours} hours\n"
-        output += "\n"
-
-        # Get individual controls
-        if control_ids:
-            placeholders = ','.join(['%s'] * len(control_ids))
-            cursor.execute(f"""
-                SELECT control_id, name, control_type, description,
-                       risk_reduction_percentage, annual_cost_estimate
-                FROM compensating_controls
-                WHERE control_id = ANY(%s) AND is_active = true
-            """, (control_ids,))
-
-            controls = cursor.fetchall()
-
-            if controls:
-                output += f"**Included Controls** ({len(controls)}):\n\n"
-                for ctrl in controls:
-                    ctrl_id, name, ctrl_type, ctrl_desc, reduction, ctrl_cost = ctrl
-                    output += f"• **{name}** ({ctrl_type})\n"
-                    output += f"  └─ Risk Reduction: {reduction}%"
-                    if include_cost:
-                        output += f" | Cost: {ctrl_cost}"
-                    output += "\n"
-                    if ctrl_desc:
-                        output += f"  └─ {ctrl_desc[:120]}...\n"
-                    output += "\n"
-
-        conn.close()
         return output
 
     except Exception as e:
@@ -1958,21 +1961,23 @@ async def validate_job_role_handler(
         import json
 
         conn = psycopg2.connect(os.getenv('DATABASE_URL'))
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        # Search for job role by title (case-insensitive)
-        cursor.execute("""
-            SELECT job_role_id, job_title, department,
-                   typical_netsuite_roles, acceptable_role_combinations,
-                   typical_resolution_strategy, typical_required_controls,
-                   business_justification
-            FROM job_role_mappings
-            WHERE LOWER(job_title) = LOWER(%s) AND is_active = true
-            LIMIT 1
-        """, (job_title,))
+            # Search for job role by title (case-insensitive)
+            cursor.execute("""
+                SELECT job_role_id, job_title, department,
+                       typical_netsuite_roles, acceptable_role_combinations,
+                       typical_resolution_strategy, typical_required_controls,
+                       business_justification
+                FROM job_role_mappings
+                WHERE LOWER(job_title) = LOWER(%s) AND is_active = true
+                LIMIT 1
+            """, (job_title,))
 
-        role_mapping = cursor.fetchone()
-        conn.close()
+            role_mapping = cursor.fetchone()
+        finally:
+            conn.close()
 
         if not role_mapping:
             return f"❌ **Job Role Not Found**\n\nNo mapping found for job title: {job_title}\n\nℹ️  Use `get_permission_categories` to see available job roles."
@@ -2104,16 +2109,18 @@ async def get_permission_categories_handler(
         import json
 
         conn = psycopg2.connect(os.getenv('DATABASE_URL'))
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT category_id, category_name, description, base_risk_score
-            FROM permission_categories
-            ORDER BY base_risk_score DESC
-        """)
+            cursor.execute("""
+                SELECT category_id, category_name, description, base_risk_score
+                FROM permission_categories
+                ORDER BY base_risk_score DESC
+            """)
 
-        categories = cursor.fetchall()
-        conn.close()
+            categories = cursor.fetchall()
+        finally:
+            conn.close()
 
         if not categories:
             return "No permission categories found in database."
@@ -2240,38 +2247,36 @@ async def query_knowledge_base_handler(
         query_embedding = model.encode(query).tolist()
 
         # Connect to database
-        conn = psycopg2.connect(
-            "postgresql://compliance_user:compliance_pass@localhost:5432/compliance_db"
-        )
-        cursor = conn.cursor()
+        conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+        try:
+            cursor = conn.cursor()
 
-        # Build query with optional doc_type filter
-        sql = """
-            SELECT
-                doc_id,
-                doc_type,
-                content,
-                metadata,
-                1 - (embedding <=> %s::vector) as similarity
-            FROM knowledge_base_documents
-        """
-        params = [query_embedding]
+            # Build query with optional doc_type filter
+            sql = """
+                SELECT
+                    doc_id,
+                    doc_type,
+                    content,
+                    metadata,
+                    1 - (embedding <=> %s::vector) as similarity
+                FROM knowledge_base_documents
+            """
+            params = [query_embedding]
 
-        if doc_type != "ALL":
-            sql += " WHERE doc_type = %s"
-            params.append(doc_type)
+            if doc_type != "ALL":
+                sql += " WHERE doc_type = %s"
+                params.append(doc_type)
 
-        sql += """
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-        """
-        params.extend([query_embedding, limit])
+            sql += """
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s
+            """
+            params.extend([query_embedding, limit])
 
-        cursor.execute(sql, params)
-        results = cursor.fetchall()
-
-        cursor.close()
-        conn.close()
+            cursor.execute(sql, params)
+            results = cursor.fetchall()
+        finally:
+            conn.close()
 
         if not results:
             return f"No knowledge base documents found for query: '{query}'"
@@ -2410,28 +2415,25 @@ async def analyze_role_permissions_handler(
         from collections import defaultdict
 
         # Get role permissions from database
-        conn = psycopg2.connect(
-            "postgresql://compliance_user:compliance_pass@localhost:5432/compliance_db"
-        )
-        cursor = conn.cursor()
+        conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+        try:
+            cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT role_name, permissions
-            FROM roles
-            WHERE role_name = %s
-        """, (role_name,))
+            cursor.execute("""
+                SELECT role_name, permissions
+                FROM roles
+                WHERE role_name = %s
+            """, (role_name,))
 
-        result = cursor.fetchone()
-        if not result:
-            cursor.close()
+            result = cursor.fetchone()
+        finally:
             conn.close()
+
+        if not result:
             return f"❌ Role not found: {role_name}\n\nAvailable roles can be found using list_all_users tool."
 
         _, permissions_json = result
         permissions = json.loads(permissions_json) if isinstance(permissions_json, str) else permissions_json
-
-        cursor.close()
-        conn.close()
 
         # Load permission mapping
         perm_mapping_path = Path('data/netsuite_permission_mapping.json')
@@ -2701,28 +2703,27 @@ async def get_role_conflicts_handler(role_name: str) -> str:
         query_embedding = model.encode(query_text).tolist()
 
         # Connect to database
-        conn = psycopg2.connect(
-            "postgresql://compliance_user:compliance_pass@localhost:5432/compliance_db"
-        )
-        cursor = conn.cursor()
+        conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+        try:
+            cursor = conn.cursor()
 
-        # Search knowledge base for this specific role
-        cursor.execute("""
-            SELECT
-                title,
-                content,
-                metadata,
-                1 - (embedding <=> %s::vector) as similarity
-            FROM knowledge_base_documents
-            WHERE doc_type = 'role_conflict_analysis'
-              AND title ILIKE %s
-            ORDER BY similarity DESC
-            LIMIT 1
-        """, (query_embedding, f"%{role_name}%"))
+            # Search knowledge base for this specific role
+            cursor.execute("""
+                SELECT
+                    title,
+                    content,
+                    metadata,
+                    1 - (embedding <=> %s::vector) as similarity
+                FROM knowledge_base_documents
+                WHERE doc_type = 'role_conflict_analysis'
+                  AND title ILIKE %s
+                ORDER BY similarity DESC
+                LIMIT 1
+            """, (query_embedding, f"%{role_name}%"))
 
-        result = cursor.fetchone()
-        cursor.close()
-        conn.close()
+            result = cursor.fetchone()
+        finally:
+            conn.close()
 
         if not result:
             return f"""❌ No conflict analysis found for role: {role_name}

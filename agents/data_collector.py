@@ -6,6 +6,7 @@ to the local database, ensuring data is always fresh and complete.
 """
 
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -321,10 +322,88 @@ class DataCollectionAgent:
             logger.info(f"Last sync was {hours_since_last:.1f} hours ago, performing full sync")
             return self.full_sync(system_name, triggered_by)
 
-        # For now, incremental sync falls back to full sync
-        # TODO: Implement true incremental sync with lastModifiedDate filter
-        logger.info("Incremental sync not yet implemented, performing full sync")
-        return self.full_sync(system_name, triggered_by)
+        # Perform true incremental sync using lastModifiedDate filter
+        last_modified_after = last_sync.completed_at
+        logger.info(f"Running incremental sync for changes since {last_modified_after.isoformat()}")
+
+        start_time = datetime.utcnow()
+        sync = self.sync_repo.create_sync({
+            'sync_type': 'incremental',
+            'system_name': system_name,
+            'status': 'running',
+            'started_at': start_time,
+            'triggered_by': triggered_by
+        })
+
+        try:
+            connector = self.connectors.get(system_name)
+            if not connector:
+                raise ValueError(f"No connector found for system: {system_name}")
+
+            users_data = connector.fetch_users_with_roles_sync(
+                include_permissions=True,
+                include_inactive=False,
+                last_modified_after=last_modified_after
+            )
+
+            users_fetched = len(users_data)
+            logger.info(f"Incremental fetch: {users_fetched} modified users since {last_modified_after.isoformat()}")
+
+            if users_fetched == 0:
+                end_time = datetime.utcnow()
+                self.sync_repo.update_sync(str(sync.id), {
+                    'status': 'success',
+                    'completed_at': end_time,
+                    'users_fetched': 0,
+                    'users_synced': 0,
+                    'roles_synced': 0,
+                    'violations_detected': 0
+                })
+                return {
+                    'success': True,
+                    'sync_id': str(sync.id),
+                    'duration': (end_time - start_time).total_seconds(),
+                    'users_fetched': 0,
+                    'users_synced': 0,
+                    'roles_synced': 0,
+                    'violations_detected': 0
+                }
+
+            synced_users = connector.sync_to_database_sync(users_data, self.user_repo, self.role_repo)
+            users_synced = len(synced_users)
+            total_roles = sum(len(u.user_roles) for u in synced_users)
+
+            end_time = datetime.utcnow()
+            duration = (end_time - start_time).total_seconds()
+            self.sync_repo.update_sync(str(sync.id), {
+                'status': 'success',
+                'completed_at': end_time,
+                'users_fetched': users_fetched,
+                'users_synced': users_synced,
+                'roles_synced': total_roles,
+                'violations_detected': 0
+            })
+
+            logger.info(f"Incremental sync complete: {users_synced} users updated in {duration:.2f}s")
+            return {
+                'success': True,
+                'sync_id': str(sync.id),
+                'duration': duration,
+                'users_fetched': users_fetched,
+                'users_synced': users_synced,
+                'roles_synced': total_roles,
+                'violations_detected': 0
+            }
+
+        except Exception as e:
+            logger.error(f"Incremental sync failed: {e}")
+            self.sync_repo.update_sync(str(sync.id), {
+                'status': 'failed',
+                'completed_at': datetime.utcnow(),
+                'error_message': str(e)
+            })
+            self._send_alert(f"Incremental sync failed: {e}")
+            return {'success': False, 'error': str(e)}
 
     def manual_sync(self, system_name: str = 'netsuite', sync_type: str = 'full') -> Dict[str, Any]:
         """
@@ -432,18 +511,37 @@ class DataCollectionAgent:
 
     def _send_alert(self, message: str):
         """
-        Send alert notification (Slack, email, etc.)
+        Send alert notification via Slack webhook or NotificationAgent.
 
         Args:
             message: Alert message
         """
-        # TODO: Implement alert mechanism
         logger.warning(f"ALERT: {message}")
-        # Could integrate with:
-        # - Slack webhook
-        # - Email via SMTP
-        # - PagerDuty
-        # - etc.
+
+        slack_webhook_url = os.getenv('SLACK_WEBHOOK_URL')
+        if slack_webhook_url:
+            try:
+                import requests as _requests
+                _requests.post(
+                    slack_webhook_url,
+                    json={"text": f":warning: *Data Collection Alert*\n{message}"},
+                    timeout=10
+                )
+            except Exception as e:
+                logger.error(f"Failed to send Slack alert: {e}")
+        else:
+            try:
+                from agents.notifier import NotificationAgent
+                notifier = NotificationAgent(
+                    violation_repo=self.violation_repo,
+                    user_repo=self.user_repo
+                )
+                notifier._log_to_console(
+                    subject="Data Collection Alert",
+                    message=message
+                )
+            except Exception as e:
+                logger.error(f"Failed to send alert via NotificationAgent: {e}")
 
 
 # Global instance

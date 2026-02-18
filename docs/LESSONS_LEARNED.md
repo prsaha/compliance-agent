@@ -5080,13 +5080,268 @@ await list_all_users_handler(filter_by_department="Finance")
 
 ---
 
-**Document Version:** 1.4
-**Last Updated:** 2026-02-12 20:50:00 (Updated with Issue #17 + Agent Response with Attachments Pattern)
+## Issues #18–26: Security, Runtime & Token Optimization (Feb 2026)
+
+**Added:** 2026-02-18
+**Context:** Comprehensive codebase audit identified critical security vulnerabilities, runtime crashes, silent failures, and token inefficiencies.
+
+---
+
+### Issue #18: Hardcoded Database Credentials in MCP Tool Handlers
+
+**Severity:** 🔴 CRITICAL — Security vulnerability
+
+#### What Happened
+
+Three tool handlers in `mcp/mcp_tools.py` had hardcoded PostgreSQL credentials:
+```python
+conn = psycopg2.connect("postgresql://compliance_user:compliance_pass@localhost:5432/compliance_db")
+```
+
+#### Root Cause
+
+Copy-paste from initial development. The MCP server elsewhere already used `os.getenv('DATABASE_URL')` correctly — the inconsistency went undetected because all three handlers functioned normally in the dev environment.
+
+#### Solution Applied
+
+```python
+conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+```
+
+#### Lesson Learned
+
+> **Never hardcode credentials even in "internal" handlers.** Grep for literal connection strings before any commit: `grep -r "postgresql://" --include="*.py"`.
+
+---
+
+### Issue #19: Insecure Default API Key
+
+**Severity:** 🔴 CRITICAL — Security vulnerability
+
+#### What Happened
+
+`mcp/mcp_server.py` had:
+```python
+API_KEY = os.getenv('MCP_API_KEY', 'dev-key-12345')
+```
+If `MCP_API_KEY` was not set, the server started with a well-known default key — any attacker who read the source code could authenticate.
+
+#### Solution Applied
+
+```python
+API_KEY = os.getenv('MCP_API_KEY')
+if not API_KEY:
+    raise ValueError("MCP_API_KEY environment variable is required and must be set")
+```
+
+#### Downstream Effect
+
+The `.env` file must now explicitly set `MCP_API_KEY`. The server will refuse to start otherwise. Added `MCP_API_KEY=dev-key-12345` to `.env` to match the STDIO bridge.
+
+#### Lesson Learned
+
+> **Never provide insecure defaults for security-critical config.** `os.getenv('SECRET', 'default')` is always wrong for keys/passwords.
+
+---
+
+### Issue #20: CORS Wildcard Origin
+
+**Severity:** 🟡 HIGH — Security vulnerability
+
+#### What Happened
+
+```python
+app.add_middleware(CORSMiddleware, allow_origins=["*"], ...)
+```
+Any browser-side script on any domain could make authenticated requests to the MCP server.
+
+#### Solution Applied
+
+```python
+_allowed_origins_raw = os.getenv('MCP_ALLOWED_ORIGINS', '')
+_allowed_origins = [o.strip() for o in _allowed_origins_raw.split(',') if o.strip()] or ["http://localhost"]
+app.add_middleware(CORSMiddleware, allow_origins=_allowed_origins, ...)
+```
+
+#### Lesson Learned
+
+> **Default CORS to deny-all.** `allow_origins=["*"]` is only acceptable for fully public APIs with no authentication.
+
+---
+
+### Issue #21: SQL Injection via F-String LIMIT Clause
+
+**Severity:** 🔴 CRITICAL — Security vulnerability
+
+#### What Happened
+
+```python
+query += f" LIMIT {limit}"
+cursor.execute(query)
+```
+The `limit` parameter came from API input. A crafted value like `10; DROP TABLE users--` could execute arbitrary SQL.
+
+#### Solution Applied
+
+```python
+query += " LIMIT %s"
+params.append(limit)
+cursor.execute(query, params)
+```
+
+#### Lesson Learned
+
+> **Never interpolate any user-controlled value into SQL strings.** Use parameterized queries (`%s` for psycopg2) for ALL dynamic values, including LIMIT/OFFSET.
+
+---
+
+### Issue #22: Unclosed Database Connections on Exception
+
+**Severity:** 🟡 HIGH — Resource leak
+
+#### What Happened
+
+Seven `psycopg2.connect()` calls in `mcp/mcp_tools.py` had no `finally` clause. Any exception during query execution would leave the connection open, eventually exhausting the PostgreSQL connection pool.
+
+#### Solution Applied
+
+```python
+conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+try:
+    cursor = conn.cursor()
+    # ... query logic ...
+finally:
+    conn.close()
+```
+
+Applied to all 7 handlers.
+
+#### Lesson Learned
+
+> **Every `psycopg2.connect()` must have a `finally: conn.close()`.** Better yet, use a context manager (`with psycopg2.connect(...) as conn:`).
+
+---
+
+### Issue #23: Orchestrator Calling Non-Existent Agent Methods
+
+**Severity:** 🔴 CRITICAL — Runtime crash
+
+#### What Happened
+
+`agents/orchestrator.py` called two things that don't exist:
+1. `DataCollectionAgent(netsuite_client=netsuite_client)` — constructor has no such parameter
+2. `data_collector.fetch_users_from_netsuite()` — method doesn't exist; the correct method is `full_sync()`
+
+The orchestrator crashed on first invocation.
+
+#### Root Cause
+
+Interface drift: the `DataCollectionAgent` was refactored but the orchestrator was not updated.
+
+#### Solution Applied
+
+```python
+# Before (broken)
+self.data_collector = DataCollectionAgent(netsuite_client=netsuite_client)
+result = self.data_collector.fetch_users_from_netsuite(include_permissions=True)
+
+# After (fixed)
+self.data_collector = DataCollectionAgent(enable_scheduler=False)
+result = self.data_collector.full_sync(triggered_by='orchestrator')
+```
+
+#### Lesson Learned
+
+> **Treat agent constructor signatures and public method names as a contract.** When refactoring an agent, search all callers: `grep -r "DataCollectionAgent\|fetch_users_from_netsuite" --include="*.py"`.
+
+---
+
+### Issue #24: Token Inefficiency — All 35 Tool Schemas Sent on Every Request
+
+**Severity:** 🟡 MEDIUM — Cost issue
+
+#### What Happened
+
+The Slack bot passed all 35 MCP tool schemas to every Claude call. Each schema contains full descriptions and input schemas — approximately 8,000–12,000 tokens of tool definitions per request, regardless of what the user asked.
+
+#### Solution Applied
+
+Created `utils/tool_router.py` with intent-based routing:
+1. Regex patterns classify the user's message into one of 9 intent groups
+2. Only the 3-8 tools relevant to that intent are passed to Claude
+3. Saves ~85% of tool definition tokens per request
+
+```python
+relevant_tools = select_tools_for_intent(user_message, MCP_TOOLS)
+```
+
+#### Lesson Learned
+
+> **Tool schema tokens add up fast.** With 35 tools at ~300 tokens each, every Slack message costs ~10K tokens before Claude has even read the user's question. Always route tools by intent.
+
+---
+
+### Issue #25: Slack Bot Rendering Raw Markdown
+
+**Severity:** 🟡 MEDIUM — UX issue
+
+#### What Happened
+
+Claude's responses used standard Markdown (`### headers`, `**bold**`, `| tables |`) which Slack displays as literal characters — `###`, `**`, `|` all visible to the user.
+
+#### Root Cause
+
+The system prompt said "format responses clearly for Slack" but gave no explicit formatting rules. Claude defaulted to Markdown.
+
+#### Solution Applied
+
+1. Updated system prompt with explicit Slack mrkdwn rules:
+   - `*bold*` not `**bold**`
+   - No `###` headings — use `*Title*` on its own line
+   - No markdown tables — use bullet lists
+   - Use `---` for section separators
+
+2. Added `format_as_blocks()` to convert Claude's output to Slack Block Kit sections, with `---` separators becoming visual dividers.
+
+3. All `say(text=...)` calls updated to `say(text=..., blocks=format_as_blocks(response))`.
+
+#### Lesson Learned
+
+> **Slack does not render standard Markdown.** Explicitly document the target format in the system prompt. Test bot output in Slack before considering it "done".
+
+---
+
+### Issue #26: No Visual Feedback While Bot Processes Long Requests
+
+**Severity:** 🟢 LOW — UX issue
+
+#### What Happened
+
+The bot posted "Processing your request..." as a static message, then posted a *second* message with the response. This created message clutter and gave no sense of progress for requests taking 10–30 seconds.
+
+#### Solution Applied
+
+1. Post one initial "thinking" message immediately.
+2. Start a background thread that cycles the message through stages every 2.5 seconds:
+   `⏳ Analyzing... → 🔍 Querying... → 🧠 Reasoning... → 📊 Processing... → ✍️ Drafting...`
+3. When Claude finishes, stop the thread and **update the same message in-place** with `chat_update()`.
+
+Result: one message, animated, replaced by the real answer. Zero clutter.
+
+#### Lesson Learned
+
+> **`chat_update()` is the right tool for progressive disclosure in Slack.** Post once, update in-place. Never post a "processing" message and then a separate response message.
+
+---
+
+**Document Version:** 1.5
+**Last Updated:** 2026-02-18 (Updated with Issues #18-26: Security hardening, runtime fixes, token optimization, Slack UI)
 **Maintainer:** Compliance Engineering Team
 **Next Review:** After pre-commit hooks implementation
 
 **Change Log:**
-- v1.4 (2026-02-12): Added Issue #17 - Python boolean syntax recurrence in tool #20 analyze_role_permissions (CRITICAL: second occurrence of Issue #10); Added Architecture Decision: Agent Response with Attachments Pattern; Updated tool count: 11 → 20 MCP tools
+- v1.5 (2026-02-18): Added Issues #18-26 — hardcoded credentials, insecure API key default, CORS wildcard, SQL injection, connection leaks, orchestrator method mismatch, token inefficiency, Slack markdown rendering, missing progress feedback
+- v1.4 (2026-02-12): Added Issue #17 - Python boolean syntax recurrence in tool #20 analyze_role_permissions; Added Architecture Decision: Agent Response with Attachments Pattern; Updated tool count: 11 → 20 MCP tools
 - v1.3 (2026-02-12): Added Issues #13-15 - NetSuite RESTlet page size limit (CRITICAL: 79.2% data loss), database constraint case mismatch, SOD analysis foreign key violation; Updated metrics: 20.8% → 99.7% user coverage
 - v1.2 (2026-02-12): Added Issues #10-12 - Python boolean syntax, dictionary vs object access, LLM message format; Added list_all_users MCP tool implementation
 - v1.1 (2026-02-12): Added Issue #9 - Non-Existent Repository Method Call (Critical post-deployment bug)

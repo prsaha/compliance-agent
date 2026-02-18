@@ -5,6 +5,7 @@ Handles database operations for approved exceptions, controls, violations, and r
 """
 
 from typing import List, Optional, Dict, Any, Tuple
+import sqlalchemy
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func, desc
 from datetime import datetime, date
@@ -179,6 +180,46 @@ class ExceptionRepository:
         except Exception as e:
             logger.error(f"Error fetching exceptions for user: {str(e)}")
             return []
+
+    def find_active_exception(
+        self,
+        user_id: uuid.UUID,
+        rule_id: Optional[str] = None
+    ) -> bool:
+        """
+        Check if there is an active approved exception for a user (and optional rule).
+
+        Args:
+            user_id: User UUID
+            rule_id: Optional SOD rule ID to match against; if None, any active exception qualifies
+
+        Returns:
+            True if an active approved exception exists, False otherwise
+        """
+        try:
+            query = self.session.query(ApprovedExceptionModel).filter(
+                and_(
+                    ApprovedExceptionModel.user_id == user_id,
+                    ApprovedExceptionModel.status == ExceptionStatus.ACTIVE
+                )
+            )
+
+            if rule_id is not None:
+                # Check if rule_id appears in the stored rule/role context
+                # Exceptions store role_ids; we match if the rule's code is in exception metadata
+                exceptions = query.all()
+                for exc in exceptions:
+                    metadata = exc.__dict__.get('exception_metadata') or {}
+                    approved_rules = metadata.get('rule_ids', [])
+                    if str(rule_id) in [str(r) for r in approved_rules]:
+                        return True
+                return False
+
+            return query.first() is not None
+
+        except Exception as e:
+            logger.error(f"Error checking active exception for user {user_id}: {str(e)}")
+            return False
 
     def find_similar_exceptions(
         self,

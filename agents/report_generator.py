@@ -12,6 +12,7 @@ from datetime import datetime
 from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from utils.langchain_callback import TokenTrackingCallback
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +51,20 @@ class ReportGeneratorAgent:
     Takes analysis results and user preferences to generate tailored reports.
     """
 
-    def __init__(self, model: str = "claude-opus-4-6"):
+    def __init__(self, model: str = "claude-sonnet-4-5"):
         """
         Initialize Report Generator Agent
 
         Args:
-            model: Claude model to use for generation
+            model: Claude model to use for generation (Sonnet default — sufficient for structured reports)
         """
-        self.llm = ChatAnthropic(model=model, temperature=0.3)
+        self._token_callback = TokenTrackingCallback(agent_name="report_generator", operation="report_generation")
+        self.llm = ChatAnthropic(
+            model=model,
+            temperature=0.3,
+            max_tokens=2048,
+            callbacks=[self._token_callback]
+        )
         logger.info(f"Report Generator initialized with model: {model}")
 
     def generate_custom_report(

@@ -1,8 +1,8 @@
 # Claude Code Project Guide: SOD Compliance System
 
 **Project:** AI-Powered Segregation of Duties (SOD) Compliance System
-**Version:** 1.0
-**Last Updated:** 2026-02-12
+**Version:** 1.1
+**Last Updated:** 2026-02-16
 **Primary Language:** Python 3.9+
 **Framework:** FastAPI with MCP (Model Context Protocol)
 
@@ -24,8 +24,29 @@ This is an autonomous compliance monitoring system that peforms user access revi
 - ✅ 1,928/1,933 users synced from NetSuite (99.7% coverage)
 - ✅ 18 SOD rules implemented and active
 - ✅ 55x query performance improvement (on-demand → cached)
-- ✅ 11 MCP tools operational
+- ✅ 35 MCP tools operational (updated from 11)
 - ✅ Autonomous agent running 24/7
+- ✅ **NEW**: Slack bot with multi-turn agentic reasoning (Feb 2026)
+
+### 🚀 Latest Enhancement: Multi-Turn Agentic Tool Use (Feb 2026)
+
+The Slack bot now supports **multi-step reasoning** where Claude can:
+1. Make initial tool calls to gather information
+2. Analyze the results
+3. Make follow-up tool calls based on that analysis
+4. Provide comprehensive recommendations
+
+**Example Impact:**
+- **Before**: User asks "Can we assign Controller role to Austin?" → Bot checks new role only → Reports "0 conflicts" ❌
+- **After**: Bot gets current roles → Analyzes ALL roles together → Reports "249 conflicts, HIGH risk" ✅
+
+**Technical Details:**
+- Multi-turn conversation loop (up to 5 turns)
+- Automatic Slack @mention → email resolution
+- Complete role combination analysis (not just new role in isolation)
+- File: `compliance-agent/slack_bot_local.py` (lines 242-315)
+
+**See:** `docs/SLACK_INTEGRATION.md` for complete documentation.
 
 ---
 

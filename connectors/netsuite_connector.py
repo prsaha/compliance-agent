@@ -4,6 +4,7 @@ NetSuite Connector - Wraps existing NetSuite client for MCP integration
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from datetime import datetime as _datetime
 
 from .base_connector import BaseConnector
 from services.netsuite_client import NetSuiteClient
@@ -62,6 +63,7 @@ class NetSuiteConnector(BaseConnector):
         self,
         include_permissions: bool = True,
         include_inactive: bool = False,
+        last_modified_after: Optional[_datetime] = None,
         **kwargs
     ) -> List[Dict[str, Any]]:
         """
@@ -70,12 +72,13 @@ class NetSuiteConnector(BaseConnector):
         Args:
             include_permissions: Include detailed role permissions
             include_inactive: Include inactive users
+            last_modified_after: Only return users modified after this datetime (incremental sync)
             **kwargs: Additional parameters (subsidiary, department, etc.)
 
         Returns:
             List of user dictionaries with roles
         """
-        logger.info(f"Fetching users from NetSuite (permissions={include_permissions})")
+        logger.info(f"Fetching users from NetSuite (permissions={include_permissions}, incremental={last_modified_after is not None})")
 
         try:
             # Use paginated fetch for all users
@@ -83,7 +86,8 @@ class NetSuiteConnector(BaseConnector):
             result = self.client.get_all_users_paginated(
                 include_permissions=include_permissions,
                 status='ACTIVE' if not include_inactive else 'ALL',
-                page_size=200
+                page_size=200,
+                last_modified_after=last_modified_after
             )
 
             if not result.get('success'):

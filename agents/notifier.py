@@ -66,7 +66,11 @@ class NotificationAgent:
         self.job_role_mapping_repo = job_role_mapping_repo
 
         # Initialize cache service
-        redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+        redis_url = os.getenv('REDIS_URL')
+        if not redis_url:
+            logger.warning("REDIS_URL not set — cache service will be disabled")
+            enable_cache = False
+            redis_url = ''
         self.cache = get_cache_service(redis_url=redis_url, enabled=enable_cache)
         if self.cache.enabled:
             logger.info("Cache service enabled for AI analysis")
@@ -665,10 +669,9 @@ Recommended Actions:
         # Send via requested channels
         if 'EMAIL' in channels and self.email_enabled:
             email_result = self._send_email(
-                to_emails=recipients,
+                recipients=recipients,
                 subject=subject,
-                html_content=self._format_compliance_report_html(scan_summary),
-                plain_content=message
+                message=message
             )
             results['channels']['EMAIL'] = email_result
 

@@ -28,6 +28,18 @@ from models.database import (
     SyncType
 )
 
+from models.approved_exception import (
+    ApprovedExceptionModel,
+    ExceptionControlModel,
+    ExceptionViolationModel,
+    ExceptionReviewModel,
+    CompensatingControl,
+    ExceptionStatus,
+    ImplementationStatus,
+    RemediationStatus,
+    ReviewOutcome,
+)
+
 __all__ = [
     # Config
     'Base',
@@ -36,7 +48,7 @@ __all__ = [
     'get_db_session',
     'init_database',
     'enable_pgvector',
-    # Models
+    # Core models
     'User',
     'Role',
     'UserRole',
@@ -47,11 +59,22 @@ __all__ = [
     'AgentLog',
     'Notification',
     'AuditTrail',
-    # Enums
+    # Exception management models
+    'ApprovedExceptionModel',
+    'ExceptionControlModel',
+    'ExceptionViolationModel',
+    'ExceptionReviewModel',
+    'CompensatingControl',
+    # Core enums
     'UserStatus',
     'ViolationSeverity',
     'ViolationStatus',
     'ScanStatus',
     'SyncStatus',
-    'SyncType'
+    'SyncType',
+    # Exception enums
+    'ExceptionStatus',
+    'ImplementationStatus',
+    'RemediationStatus',
+    'ReviewOutcome',
 ]

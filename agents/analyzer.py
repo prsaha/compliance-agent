@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage
 from langchain_core.output_parsers import JsonOutputParser
 
 from models.database import ViolationSeverity, ViolationStatus
@@ -24,8 +25,22 @@ from repositories.violation_repository import ViolationRepository
 from repositories.user_repository import UserRepository
 from repositories.role_repository import RoleRepository
 from repositories.sod_rule_repository import SODRuleRepository
+from utils.langchain_callback import TokenTrackingCallback
 
 logger = logging.getLogger(__name__)
+
+# Static system prompt (identical for every user — eligible for prefix caching)
+_SOD_ANALYST_SYSTEM_PROMPT = (
+    "You are a senior compliance analyst specializing in Segregation of Duties (SOD) and internal controls. "
+    "Analyze the user's access rights and provide: "
+    "1. Overall risk assessment. "
+    "2. Specific concerns about role combinations. "
+    "3. Potential business impact if access is misused. "
+    "4. Detailed remediation recommendations. "
+    "5. Priority level for remediation. "
+    "Consider: SOX compliance, principle of least privilege, separation of creation/approval duties, "
+    "and financial transaction controls. Respond in JSON format."
+)
 
 
 class SODAnalysisAgent:
@@ -38,7 +53,8 @@ class SODAnalysisAgent:
         violation_repo: ViolationRepository,
         sod_rule_repo: SODRuleRepository,
         sod_rules_path: Optional[str] = None,
-        llm_model: str = "claude-opus-4.6"  # Use Opus for complex reasoning
+        llm_model: str = "claude-opus-4.6",  # Use Opus for complex reasoning
+        exception_repo=None  # Optional ExceptionRepository for business justification checks
     ):
         """
         Initialize SOD Analysis Agent
@@ -50,12 +66,20 @@ class SODAnalysisAgent:
             sod_rule_repo: SOD rule repository instance
             sod_rules_path: Path to SOD rules JSON file
             llm_model: Claude model to use (Opus for deep analysis)
+            exception_repo: Optional ExceptionRepository for approved exception lookups
         """
         self.user_repo = user_repo
         self.role_repo = role_repo
         self.violation_repo = violation_repo
         self.sod_rule_repo = sod_rule_repo
-        self.llm = ChatAnthropic(model=llm_model, temperature=0)
+        self.exception_repo = exception_repo
+        self._token_callback = TokenTrackingCallback(agent_name="analyzer", operation="sod_analysis")
+        self.llm = ChatAnthropic(
+            model=llm_model,
+            temperature=0,
+            max_tokens=2048,
+            callbacks=[self._token_callback]
+        )
 
         # Load SOD rules
         if sod_rules_path is None:
@@ -492,24 +516,13 @@ class SODAnalysisAgent:
                 'violation_severities': [v.severity.value for v in existing_violations]
             }
 
-            # Create prompt for Claude Opus
+            # Create prompt — system message uses cache_control for prefix caching
             prompt = ChatPromptTemplate.from_messages([
-                ("system", """You are a senior compliance analyst with expertise in Segregation of Duties (SOD) and internal controls.
-Analyze the user's access rights and provide:
-1. Overall risk assessment
-2. Specific concerns about role combinations
-3. Potential business impact if access is misused
-4. Detailed remediation recommendations
-5. Priority level for remediation
-
-Consider:
-- SOX compliance requirements
-- Industry best practices for access control
-- Principle of least privilege
-- Separation of duties between creation and approval
-- Financial transaction controls
-
-Provide detailed, actionable analysis in JSON format."""),
+                SystemMessage(content=[{
+                    "type": "text",
+                    "text": _SOD_ANALYST_SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"}
+                }]),
                 ("user", """Analyze this NetSuite user's access rights:
 
 User: {user_email}
@@ -721,28 +734,28 @@ Provide comprehensive analysis in this JSON format:
 
     def _has_business_justification(self, user: Any, rule: Dict[str, Any]) -> bool:
         """
-        Check if user has documented business justification for role combination
+        Check if user has a documented, active approved exception for this rule combination.
 
-        This would check an SOD exceptions table in the future.
-        For now, returns False (no exceptions documented).
+        Queries the approved_exceptions table via ExceptionRepository.
 
         Args:
             user: User object
             rule: SOD rule dictionary
 
         Returns:
-            True if user has approved exception, False otherwise
+            True if user has an active approved exception, False otherwise
         """
-        # TODO: Implement SOD exception registry
-        # Would check database table for documented exceptions with:
-        # - User email
-        # - Rule ID
-        # - Business justification
-        # - Compensating controls
-        # - Approval details
-        # - Review dates
+        if self.exception_repo is None:
+            return False
 
-        return False
+        try:
+            import uuid as _uuid
+            user_id = user.id if not isinstance(user.id, _uuid.UUID) else user.id
+            rule_id = rule.get('rule_code') or rule.get('rule_id')
+            return self.exception_repo.find_active_exception(user_id, rule_id)
+        except Exception as e:
+            logger.warning(f"Error checking business justification for {getattr(user, 'email', user)}: {e}")
+            return False
 
 
 # Factory function

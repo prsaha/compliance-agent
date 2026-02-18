@@ -90,7 +90,7 @@ class ComplianceOrchestrator:
         self.notification_recipients = notification_recipients or []
 
         # Initialize agents
-        self.data_collector = DataCollectionAgent(netsuite_client=netsuite_client)
+        self.data_collector = DataCollectionAgent(enable_scheduler=False)
 
         self.analyzer = SODAnalysisAgent(
             user_repo=user_repo,
@@ -158,36 +158,15 @@ class ComplianceOrchestrator:
         logger.info("Stage 1: Collecting data from NetSuite")
 
         try:
-            # Fetch users from NetSuite
-            result = self.data_collector.fetch_users_from_netsuite(
-                include_permissions=True,
-                status='ACTIVE'
-            )
+            # Trigger full sync — DataCollectionAgent handles all storage internally
+            result = self.data_collector.full_sync(triggered_by='orchestrator')
 
             if result['success']:
-                users = result['data']
-
-                # Store users in database
-                for user_data in users:
-                    # Store user and get database object with UUID
-                    user = self.user_repo.upsert_user(user_data)
-
-                    # Store roles
-                    for role_data in user_data.get('roles', []):
-                        # Store role and get database object with UUID
-                        role = self.role_repo.upsert_role(role_data)
-
-                        # Assign role to user using database UUIDs
-                        self.user_repo.assign_role_to_user(
-                            str(user.id),  # Database UUID
-                            str(role.id)   # Database UUID
-                        )
-
-                state['users_collected'] = len(users)
+                state['users_collected'] = result.get('users_synced', 0)
                 state['results']['data_collection'] = result
                 state['stage'] = WorkflowStage.COLLECT_DATA.value
 
-                logger.info(f"Data collection complete: {len(users)} users")
+                logger.info(f"Data collection complete: {result.get('users_synced', 0)} users")
             else:
                 error_msg = f"Data collection failed: {result.get('error')}"
                 logger.error(error_msg)

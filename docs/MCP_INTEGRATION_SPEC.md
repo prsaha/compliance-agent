@@ -1,10 +1,10 @@
 # MCP Integration Technical Specification
 
 **Project**: Claude UI to Compliance Agent Integration via MCP
-**Version**: 1.0.0
-**Date**: 2026-02-12
-**Status**: 🚧 Design Phase
-**Branch**: `feature/mcp-integration`
+**Version**: 2.0.0
+**Date**: 2026-02-18
+**Status**: ✅ Production — Fully Operational
+**Branch**: `RD-1036683-billing-schedule-automation-dev`
 
 ---
 
@@ -1977,41 +1977,83 @@ cryptography>=46.0.0                # Encryption (added)
 
 ---
 
-## Open Questions
+## Resolved Questions (Originally Open)
 
-1. **NetSuite RESTlet Deployment**
-   - Who will deploy the RESTlet to production NetSuite?
-   - What permissions are needed?
-   - What is the approval process?
+1. **NetSuite RESTlet Deployment** ✅ Resolved
+   - RESTlet deployed to sandbox (5260239-SB1); scripts 3684, 3685, 3686 active
+   - Incremental sync uses `lastModifiedDate` filter to fetch only changed records
 
-2. **Claude UI Integration**
-   - How do we configure Claude UI to connect to our MCP server?
-   - What authentication method does Claude UI support?
-   - Can we test with Claude Desktop first?
+2. **Claude UI Integration** ✅ Resolved
+   - STDIO-HTTP bridge (`mcp_stdio_http_bridge.py`) connects Claude Desktop to MCP server
+   - API key authentication via `X-API-Key` header; key stored in `.env`
 
-3. **Scheduling Infrastructure**
-   - Should we use APScheduler or separate service (Airflow, etc.)?
-   - Where should scheduled jobs run (same server or separate)?
+3. **Scheduling Infrastructure** ✅ Resolved
+   - APScheduler used (BackgroundScheduler in DataCollectionAgent)
+   - Full sync: daily at 2:00 AM; incremental: hourly
+   - Runs in the same process as the MCP server
 
-4. **Notification Channels**
-   - Continue using SendGrid for email?
-   - Continue using Slack webhooks?
-   - Add Microsoft Teams support?
+4. **Notification Channels** ✅ Resolved
+   - SendGrid for email alerts (active)
+   - Slack webhook via `SLACK_WEBHOOK_URL` env var for operational alerts
+   - Slack Socket Mode bot for interactive compliance queries (new Feb 2026)
 
-5. **Deployment Target**
-   - AWS, GCP, or Azure?
-   - Kubernetes or simpler container hosting?
-   - Managed services or self-hosted?
+5. **Deployment Target** ✅ In Progress
+   - Current: Local/dev environment (macOS)
+   - Target: AWS (see `docs/AWS_PRODUCTION_DEPLOYMENT.md`)
 
 ---
 
-**Document Status**: 🚧 Draft - Pending Review
-**Next Review Date**: 2026-02-13
-**Approvers**: TBD
+## Slack Bot Integration (Added Feb 2026)
+
+The Slack bot (`slack_bot_local.py`) provides a natural language interface to all 35 MCP tools via Socket Mode.
+
+### Architecture
+
+```
+User (Slack) → Socket Mode → slack_bolt App → process_with_claude()
+                                                    ↓
+                                            AnthropicClientWrapper
+                                            (claude-opus-4-6, max 5 turns)
+                                                    ↓
+                                            call_mcp_tool() → MCP Server (port 8080)
+                                                    ↓
+                                            format_as_blocks() → Slack Block Kit
+```
+
+### Key Features
+
+| Feature | Implementation |
+|---------|---------------|
+| Multi-turn reasoning | 5-turn loop with tool call accumulation |
+| @mention resolution | `extract_user_mentions()` → Slack `users_info` API → email |
+| Animated thinking | `_animate_thinking()` background thread, 2.5s stage cycling |
+| Block Kit output | `format_as_blocks()` splits on `---` → section + divider blocks |
+| Token optimization | Intent routing, prefix caching, output sanitization, history trimming |
+| Token tracking | `AnthropicClientWrapper(agent_name="slack_bot")` |
+
+### Security
+
+| Control | Value |
+|---------|-------|
+| MCP_API_KEY | Required env var, no default; raised ValueError if unset |
+| MCP_ALLOWED_ORIGINS | Env var, defaults to `http://localhost` only |
+| Database credentials | `os.getenv('DATABASE_URL')` only, never hardcoded |
+| SQL parameters | Parameterized queries (`%s`) for all dynamic values |
+| DB connections | All `psycopg2.connect()` wrapped in `try/finally conn.close()` |
 
 ---
 
-**Document Version**: 1.0.0
-**Last Updated**: 2026-02-12
-**Author**: Prabal Saha + Claude (Sonnet 4.5)
-**Branch**: `feature/mcp-integration`
+**Document Status**: ✅ Production — Up to Date
+**Last Updated**: 2026-02-18
+**Approvers**: Prabal Saha
+
+---
+
+**Document Version**: 2.0.0
+**Last Updated**: 2026-02-18
+**Author**: Prabal Saha + Claude (Sonnet 4.6)
+**Branch**: `RD-1036683-billing-schedule-automation-dev`
+
+**Change Log:**
+- v2.0.0 (2026-02-18): Updated to production status; resolved all open questions; added Slack Bot Integration section; added Security section; updated tool count 34→35; documented token optimization and Block Kit UI
+- v1.0.0 (2026-02-12): Initial design specification

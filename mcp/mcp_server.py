@@ -42,10 +42,13 @@ See RESPONSE_STYLE_GUIDE.md for details.""",
     version="1.0.0"
 )
 
-# Add CORS middleware
+# Add CORS middleware — restrict to internal origins via MCP_ALLOWED_ORIGINS env var
+_allowed_origins_raw = os.getenv('MCP_ALLOWED_ORIGINS', '')
+_allowed_origins = [o.strip() for o in _allowed_origins_raw.split(',') if o.strip()] or ["http://localhost"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: Restrict in production
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -98,7 +101,9 @@ class ErrorCode:
 # AUTHENTICATION (Simple API Key)
 # ============================================================================
 
-API_KEY = os.getenv('MCP_API_KEY', 'dev-key-12345')  # TODO: Use secure key in production
+API_KEY = os.getenv('MCP_API_KEY')
+if not API_KEY:
+    raise ValueError("MCP_API_KEY environment variable is required and must be set")
 
 
 async def verify_api_key(request: Request):

@@ -7,6 +7,7 @@ with automatic OAuth signature generation.
 
 import os
 import logging
+from datetime import datetime
 from typing import Dict, Any, Optional
 from requests_oauthlib import OAuth1Session
 from dotenv import load_dotenv
@@ -70,7 +71,8 @@ class NetSuiteClient:
         limit: int = 1000,
         offset: int = 0,
         include_permissions: bool = True,
-        include_inactive: bool = False
+        include_inactive: bool = False,
+        last_modified_after: Optional[datetime] = None
     ) -> Dict[str, Any]:
         """
         Fetch users and their roles from NetSuite
@@ -83,6 +85,7 @@ class NetSuiteClient:
             offset: Pagination offset
             include_permissions: Include detailed role permissions
             include_inactive: Include inactive users in results
+            last_modified_after: Only return users modified after this datetime (incremental sync)
 
         Returns:
             Dict with 'success', 'data', and optional 'error' keys
@@ -101,6 +104,9 @@ class NetSuiteClient:
 
         if department:
             payload['department'] = department
+
+        if last_modified_after:
+            payload['lastModifiedDate'] = last_modified_after.strftime('%m/%d/%Y %H:%M:%S')
 
         try:
             logger.info(f"Fetching users: limit={limit}, offset={offset}, status={status}")
@@ -135,7 +141,8 @@ class NetSuiteClient:
         self,
         include_permissions: bool = True,
         status: str = 'ACTIVE',
-        page_size: int = 1000
+        page_size: int = 1000,
+        last_modified_after: Optional[datetime] = None
     ) -> Dict[str, Any]:
         """
         Fetch all users with automatic pagination
@@ -144,6 +151,7 @@ class NetSuiteClient:
             include_permissions: Include detailed role permissions
             status: Filter by status
             page_size: Number of users per page
+            last_modified_after: Only return users modified after this datetime (incremental sync)
 
         Returns:
             Dict with all users combined from multiple pages
@@ -159,7 +167,8 @@ class NetSuiteClient:
                 status=status,
                 limit=page_size,
                 offset=offset,
-                include_permissions=include_permissions
+                include_permissions=include_permissions,
+                last_modified_after=last_modified_after
             )
 
             if not result.get('success'):
