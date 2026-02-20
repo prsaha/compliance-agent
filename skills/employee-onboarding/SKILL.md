@@ -1,303 +1,264 @@
 ---
 name: employee-onboarding
-description: Multi-system employee onboarding workflow across Okta, Workday, Celigo, and NetSuite. Use when onboarding a new hire, provisioning system access for a new employee, enabling a user in NetSuite, assigning roles to a new team member, or checking onboarding status. Handles two paths: standard onboarding (provision and enable) and superuser onboarding (provision + create approval ticket for elevated role assignment). Automatically runs SOD compliance check before any role assignment. Requires compliance MCP server at localhost:8080.
+description: NetSuite role assignment approval routing triggered by Jira tickets. Use when a Jira ticket is created containing keywords like "Assign role", "Fivetran-", or a NetSuite role name paired with a user email. Reads ticket metadata, resolves the requester's NetSuite authority, runs an SOD compliance check on the requested role, and routes to the correct approver (Manager, Controller, or CFO) based on requester permissions and violation severity. Does NOT orchestrate Okta/Workday/Celigo provisioning — that is a separate automated flow.
 metadata:
   author: Prabal Saha
-  version: 1.0.0
+  version: 2.0.0
   mcp-server: compliance-system
 ---
 
-# Employee Onboarding Skill
+# Employee Onboarding — Role Assignment Approval Routing
 
 ## Instructions
 
-This skill orchestrates new employee provisioning across four systems in sequence:
-Okta → Workday → Celigo → NetSuite
+This skill is triggered when a Jira ticket is created with role assignment intent.
+It does not orchestrate system provisioning (Okta → Workday → Celigo → NetSuite).
+That flow is handled by Celigo integrations automatically.
 
-This skill applies five workflow design patterns:
-- **Pattern 1 — Sequential Orchestration**: strict step order with hard dependencies (each step passes its output to the next)
-- **Pattern 2 — Multi-MCP Coordination**: data flows across Okta, Workday, Celigo, and NetSuite; each system's output is the next system's input
-- **Pattern 3 — Iterative Refinement**: SOD role check loops up to 3 times, removing conflicts and suggesting alternatives before escalating
-- **Pattern 4 — Context-Aware Tool Selection**: access level, department, and job title determine which path and which tools to invoke
-- **Pattern 5 — Domain-Specific Intelligence**: SOX compliance rules, Compliance Officer independence requirements, and superuser gating embedded throughout
+**This skill's sole job:**
+1. Parse the Jira ticket to extract role, target user, and requester
+2. Determine the requester's authority level in NetSuite
+3. Run an SOD compliance check on the requested role
+4. Route the ticket to the correct approver based on authority + risk
 
-Always run an SOD compliance check before assigning any roles. Never assign roles that create
-CRITICAL or HIGH violations without an approved exception.
+This skill applies five design patterns:
+- **Pattern 1 — Sequential Orchestration**: parse → authority check → SOD check → route, in strict order
+- **Pattern 2 — Multi-MCP Coordination**: Jira metadata feeds NetSuite lookups; SOD result feeds routing decision
+- **Pattern 3 — Iterative Refinement**: if routing is ambiguous, escalate one level up and re-evaluate
+- **Pattern 4 — Context-Aware Tool Selection**: approval chain determined by requester's role, requested role's risk tier, and department
+- **Pattern 5 — Domain-Specific Intelligence**: SOX approval authority rules, financial role segregation, and Controller as the default approver for NetSuite financial roles
 
-Consult `references/system-guide.md` for API details, field mappings, and error codes per system.
-Consult `references/role-matrix.md` for standard role sets by job title and department.
-
----
-
-### Step 0: Gather Required Information
-
-Before starting, confirm you have:
-- Full legal name
-- Work email address
-- Job title
-- Department
-- Manager name or email
-- Start date
-- Access level: **standard** or **superuser**
-
-If any of these are missing, ask before proceeding. Do not start provisioning with incomplete data.
+Consult `references/approval-chain.md` for the full authority matrix.
+Consult `references/role-matrix.md` for role definitions and risk tiers.
 
 ---
 
-### Step 1: Okta — Identity Provisioning
+### Step 1: Parse the Jira Ticket (Pattern 1 + 2)
 
-Okta is the identity provider. All downstream systems depend on the Okta identity being created first.
+Extract the following fields from the Jira ticket:
 
-**Actions:**
-1. Create the user in Okta with:
-   - `login`: work email
-   - `firstName`, `lastName`: from intake
-   - `title`: job title
-   - `department`: department
-   - `manager`: manager's email
-   - `userType`: `standard` or `superuser`
-2. Assign the user to the appropriate Okta groups based on department (see `references/role-matrix.md` for group mappings)
-3. Send activation email: set `sendEmail: true`
-4. Capture the Okta `userId` — required for all downstream steps
+| Field | How to identify |
+|---|---|
+| **Target user** | Email address in the ticket (e.g., `abc@fivetran.com`) |
+| **Requested role** | NetSuite role name or code (e.g., `Fivetran-Controller`, `Fivetran-AP-Approver`) |
+| **Requester** | `reporter` field in Jira metadata — the person who created the ticket |
+| **Ticket ID** | Jira issue key (e.g., `NS-ONBOARD-1042`) |
+| **Justification** | Description field — business reason for the role assignment |
 
-**Verify:** Call Okta GET `/api/v1/users/{userId}` — status should be `PROVISIONED`.
+**Trigger keywords to match (case-insensitive):**
+- `"Assign role"`
+- `"Fivetran-"` followed by a role name
+- `"NetSuite role"` + email address
+- `"Enable user"` + role name
 
-**If Okta creation fails:**
-- Duplicate email: check if user already exists (`GET /api/v1/users?q={email}`)
-- Invalid department: refer to `references/role-matrix.md` for valid department values
-- Do not proceed to Step 2 until Okta status is `PROVISIONED`
+If any of these fields are missing or ambiguous, comment on the Jira ticket asking for clarification before proceeding. Do not route an incomplete request.
 
 ---
 
-### Step 2: Workday — HR Record Creation
+### Step 2: Resolve the Target User in NetSuite (Pattern 2)
 
-Workday is the system of record for employment data. The Okta userId is linked here.
+Look up the target user to confirm they exist and get their current role set:
 
-**Actions:**
-1. Create the worker record in Workday with:
-   - Employee ID (auto-assigned by Workday)
-   - Legal name, start date, job title, department, cost center
-   - Manager (look up by email in Workday)
-   - `externalId`: Okta `userId` from Step 1
-2. Set employment status to `Active`
-3. Capture the Workday `workerId` — used by Celigo for sync
-
-**Verify:** Confirm worker record exists and status is `Active`.
-
-**If Workday creation fails:**
-- Manager not found: verify manager has an active Workday record
-- Cost center invalid: check with Finance for the correct cost center code
-- Do not proceed until Workday record is confirmed active
+1. Call `get_user_violations(user_identifier={target_email})`
+   - Confirms the user exists in NetSuite
+   - Returns current roles and any existing violations
+   - If user not found: comment on Jira ticket — "Target user not found in NetSuite. Confirm user has been provisioned before submitting a role assignment request."
 
 ---
 
-### Step 3: Celigo — Sync to NetSuite
+### Step 3: Determine the Requester's Authority Level (Pattern 4 + 5)
 
-Celigo is the integration layer that syncs the Workday record to NetSuite. This is typically automatic but can be triggered manually.
+Look up the person who raised the Jira ticket to determine what they are authorized to approve:
 
-**Actions:**
-1. Trigger the Workday → NetSuite employee sync flow in Celigo:
-   - Flow name: `Workday Employee to NetSuite Contact/Employee`
-   - Filter: `workerId = {workerId from Step 2}`
-2. Monitor the sync run — wait for status `success` (typically 2-5 minutes)
-3. Capture the NetSuite `employeeId` from the Celigo sync result
-
-**Verify:** Confirm the sync run completed with 0 errors and the NetSuite employee record was created.
-
-**If Celigo sync fails:**
-- Field mapping error: check `references/system-guide.md` for required NetSuite field formats
-- Duplicate record: search NetSuite for existing employee by email before re-running
-- Auth error: verify Celigo connection credentials for NetSuite are valid
-
----
-
-### Step 3.5: Context-Aware Routing Decision (Pattern 4)
-
-Before proceeding to NetSuite, determine the correct path and tool set based on context.
-Do not rely on the intake form's "superuser" flag alone — validate it here.
+1. Call `get_user_violations(user_identifier={requester_email})` — returns requester's current NetSuite roles
+2. Call `check_my_approval_authority` — returns the requester's approval authority tier
+3. Map to authority level using `references/approval-chain.md`:
 
 ```
-Job title in role-matrix superuser list?         → Path B (Superuser)
-        ↓ No
-Department = IT AND roles include Admin/Script?  → Path B (Superuser)
-        ↓ No
-Department = Finance AND role includes Approval? → Path A + Extended SOD check (all AP/GL rules)
-        ↓ No
-Department = Compliance AND title = Officer?     → Path A + Independence check (call list_sod_rules, filter COMPLIANCE_OFFICER_INDEPENDENCE)
-        ↓ No
-Standard role set, no elevated access?           → Path A (Standard)
+Authority Levels:
+  L1 — Regular employee / IT Analyst     → Can REQUEST only, cannot approve
+  L2 — Manager / Team Lead               → Can approve LOW risk roles
+  L3 — Senior Manager / Director         → Can approve MEDIUM risk roles
+  L4 — Controller / VP Finance           → Can approve HIGH risk roles
+  L5 — CFO / C-Suite                     → Can approve CRITICAL risk roles
 ```
 
-Use `recommend_roles_for_job_title` + `references/role-matrix.md` to confirm the role set
-before routing. If context is ambiguous, ask the requestor to confirm before proceeding.
+**Key rule (Pattern 5 — Domain Intelligence):**
+- Financial roles (AP Approval, GL Full Access, Controller, Journal Entry Approval) always require minimum L4 (Controller) regardless of the requester's level
+- Compliance roles require the Compliance Officer to sign off independently
+- IT Admin / Script Deploy roles require IT Director (L4 equivalent in IT)
 
 ---
 
-### Step 4: NetSuite — Role Assignment and Enablement
+### Step 4: Run SOD Compliance Check (Pattern 3 — Iterative)
 
-This step differs based on access level.
+1. Call `analyze_access_request(user_id={target_user_id}, requested_role={role}, include_existing_roles=true)`
+2. Evaluate the result:
+
+```
+Result: CLEAR or LOW
+  → Proceed to Step 5 with required approver from authority matrix
+
+Result: MEDIUM
+  → Proceed to Step 5 — flag in ticket, note compensating controls required
+
+Result: HIGH
+  → Proceed to Step 5 — escalate to minimum L4 (Controller) regardless of requester level
+    If requester is already L4+, proceed with their approval
+
+Result: CRITICAL
+  → Escalate to L5 (CFO) — comment on Jira ticket with full SOD conflict details
+    Do not route to Controller for CRITICAL violations
+
+Result: Multiple conflicts (Pattern 3 — Iterative)
+  → For each conflict: call get_compensating_controls(violation_id)
+  → If compensating controls exist for all conflicts: document in ticket, proceed to L4
+  → If no compensating controls available for any CRITICAL conflict: reject ticket,
+    comment explaining why the role cannot be assigned
+```
 
 ---
 
-#### Path A: Standard User
+### Step 5: Route to Correct Approver (Pattern 4)
 
-**Actions:**
-1. Look up the employee in NetSuite by email: call `get_user_violations(user_identifier={email})` — confirms the record exists and returns the internal user ID
-2. Determine the standard role set: call `recommend_roles_for_job_title(job_title={title}, department={department})`
-3. **SOD Refinement Loop (Pattern 3 — Iterative Refinement)** — run up to 3 iterations:
+Based on the requester's authority level (Step 3) and the SOD risk result (Step 4),
+determine the required approver using this decision tree:
 
 ```
-Iteration 1:
-  → call analyze_access_request(user_id, proposed_roles, include_existing_roles=true)
-  → CLEAR or LOW?  Proceed to step 4.
-  → MEDIUM/HIGH/CRITICAL conflict found?
-      - Identify the conflicting role using get_role_conflicts({role})
-      - Remove the conflicting role from the proposed set
-      - Call recommend_roles_for_job_title for an alternative with lower risk
-      - Go to Iteration 2
+Requested role is financial (AP, GL, Controller, Journal)?
+  └─ YES → Minimum approver: Controller (L4), regardless of requester level
+  └─ NO  → Continue below
 
-Iteration 2:
-  → Re-run analyze_access_request with revised role set
-  → CLEAR or LOW?  Proceed to step 4.
-  → Still conflicting?  Remove conflict, substitute alternative → Iteration 3
+SOD result is CRITICAL?
+  └─ YES → Route to CFO (L5)
 
-Iteration 3:
-  → Re-run analyze_access_request with further revised role set
-  → CLEAR or LOW?  Proceed to step 4.
-  → Still CRITICAL or HIGH after 3 iterations?
-      → Escalate to Path B (Superuser) — create Jira ticket, do not enable
+SOD result is HIGH?
+  └─ YES → Route to Controller (L4)
+
+Requester authority ≥ required level for this risk tier?
+  └─ YES → Requester can self-approve → still add Controller as reviewer for audit trail
+  └─ NO  → Route to next authority level above requester
 ```
 
-4. If role set is clean after refinement: assign roles in NetSuite via `validate_job_role`
-5. Enable the user in NetSuite: set `isInactive: false`
-6. Confirm enablement: call `get_user_violations(user_identifier={email})` — user should appear active with assigned roles
+**Routing actions:**
+1. Assign the Jira ticket to the determined approver
+2. Add a comment to the Jira ticket with:
 
-**Verify:** User is active in NetSuite. Roles match the refined approved set. No open violations.
+```
+*SOD Compliance Check — [ticket ID]*
 
-**Why iterative?** The recommended role set may include roles that conflict when combined.
-Removing one role and substituting a narrower alternative is almost always sufficient to reach
-a clean state without escalating to a superuser workflow unnecessarily.
+Target user: {email}
+Requested role: {role name}
+Requested by: {requester email} (Authority level: L{n})
+
+SOD Result: {CLEAR / LOW / MEDIUM / HIGH / CRITICAL}
+Violations found: {count} — {brief description or "None"}
+
+*Routing decision:*
+Required approver: {name / role title}
+Reason: {one sentence — e.g., "Financial role requires minimum Controller approval per SOX policy"}
+
+Compensating controls required: {Yes / No}
+{If yes: list them}
+
+Next step: {Approver name}, please review and approve/deny in this ticket.
+If approved, assign roles in NetSuite and set isInactive: false if not already active.
+```
 
 ---
 
-#### Path B: Superuser
+### Step 6: Post-Approval — Execute Role Assignment and Enable User
 
-Superusers require elevated roles (e.g., Administrator, Controller, Full Access) that must go through an approval workflow before NetSuite enablement.
+Once the Jira ticket status moves to `Approved` (or the approver comments "Approved"):
 
-**Actions:**
-1. Look up the employee in NetSuite: call `get_user_violations(user_identifier={email})`
-2. Identify the requested elevated roles from intake data
-3. Run SOD compliance check on ALL requested roles together: call `analyze_access_request(user_id={id}, requested_role={roles}, include_existing_roles=true)`
-4. Create a Jira ticket with the following pre-filled:
+1. **Assign the role in NetSuite**
+   - Call `validate_job_role(user_id={target_user_id}, job_title={title}, proposed_roles=[{approved_role}])`
+   - Confirms the role is safe to assign given current role set
+   - If validation passes: assign role via NetSuite REST API:
+     ```
+     PATCH /services/rest/record/v1/employee/{internalId}
+     { "roles": [{ "role": { "id": "{roleId}" } }] }
+     ```
 
-```
-Summary: [SUPERUSER ONBOARDING] Role assignment request — {full name}
-Description:
-  Employee: {name}
-  Email: {email}
-  Job Title: {title}
-  Department: {department}
-  Start Date: {start date}
-  Manager: {manager}
+2. **Enable the user in NetSuite** (if not already active)
+   - Call `get_user_violations(user_identifier={email})` — check current `isInactive` status
+   - If `isInactive: true`: set `isInactive: false`
+     ```
+     PATCH /services/rest/record/v1/employee/{internalId}
+     { "isinactive": false }
+     ```
+   - If already active: skip, proceed to step 3
 
-  Requested Roles:
-  {list each role}
+3. **Run final SOD verification**
+   - Call `analyze_access_request(user_id={id}, requested_role={role}, include_existing_roles=true)`
+   - Confirm result is still CLEAR/LOW now that the role is live
+   - If a new conflict appears (e.g., another role was assigned between approval and execution): pause, comment on Jira ticket, re-route to approver
 
-  SOD Compliance Check Result:
-  {paste analyze_access_request output — violations if any, CLEAR if none}
-
-  Required Action:
-  1. Review role list against job responsibilities
-  2. Approve or modify role assignment
-  3. Enable user in NetSuite (set isInactive: false)
-  4. Assign approved roles in NetSuite
-  5. Close this ticket
-
-Assignee: IT Security / NetSuite Admin
-Priority: High (block on start date: {start date})
-Labels: onboarding, superuser, netsuite-access
-```
-
-5. Do NOT enable the user in NetSuite at this step — leave account inactive until ticket is resolved
-6. Notify the manager that provisioning is complete pending IT approval, with the Jira ticket link
-
----
-
-### Step 5: Onboarding Summary
-
-After completing all steps, provide a summary:
+4. **Close the Jira ticket** with a completion comment:
 
 ```
-ONBOARDING COMPLETE — {full name}
+*Role Assignment Complete — [ticket ID]*
 
-Okta:     PROVISIONED  ({userId})
-Workday:  ACTIVE       ({workerId})
-Celigo:   SYNCED       (sync run {runId})
-NetSuite: {ENABLED with roles / PENDING — Jira {ticket-id}}
+User: {email}
+Role assigned: {role name}
+NetSuite status: Active
+Final SOD check: {CLEAR / LOW — no violations}
 
-Start date: {date}
-Manager: {manager}
-Access level: {standard / superuser}
+Completed by: Compliance Agent
+Timestamp: {ISO datetime}
 ```
 
-If any step is incomplete, list it clearly with the blocking reason and next action required.
-
----
-
-### Offboarding Note
-
-This skill handles onboarding only. For offboarding (account deactivation, role removal, access revocation), a separate workflow is required. Do not attempt to reverse these steps manually.
+5. **Trigger incremental sync** to ensure compliance DB reflects the new role:
+   - Call `trigger_manual_sync(sync_type="incremental")`
 
 ---
 
 ## Examples
 
-### Example 1: Standard user onboarding
+### Example 1: Standard financial role request
 
-User says: "Onboard Sarah Chen, sarah.chen@celigo.com, Senior Accountant, Finance, starts March 1, reports to Mike Torres"
+Jira ticket: "Assign role Fivetran-AP-Approver to sarah.chen@fivetran.com"
+Requester: mike.torres@fivetran.com (Accounting Manager, L3)
 
-Actions:
-1. Create Okta identity → `PROVISIONED`
-2. Create Workday record → `Active`, workerId: `WD-48291`
-3. Trigger Celigo sync → success, netsuiteId: `NS-10847`
-4. `recommend_roles_for_job_title("Senior Accountant", "Finance")` → AP Processor, GL Viewer
-5. `analyze_access_request` → CLEAR (no SOD violations)
-6. Assign roles, enable in NetSuite
-7. Summary: all systems green, user active
+Steps:
+1. Parse: target = sarah.chen, role = AP-Approver, requester = mike.torres
+2. `get_user_violations("sarah.chen@fivetran.com")` → user found, current roles: AP Processor
+3. `get_user_violations("mike.torres@fivetran.com")` → L3 authority (Senior Manager)
+4. `analyze_access_request` → HIGH risk (AP Processor + AP Approver = CRITICAL SOD violation)
+5. Result: CRITICAL SOD conflict → escalate beyond L4
+6. Route: assign ticket to CFO. Comment: "AP Entry + AP Approval is a CRITICAL SOD conflict. Cannot be assigned without CFO approval and documented compensating controls."
 
 ---
 
-### Example 2: Superuser onboarding
+### Example 2: Low-risk IT role request
 
-User says: "Onboard James Rivera, james.rivera@celigo.com, IT Systems Admin, IT, superuser, starts Feb 24"
+Jira ticket: "Assign role Fivetran-Report-Viewer to james.park@fivetran.com"
+Requester: lisa.nguyen@fivetran.com (IT Director, L4)
 
-Actions:
-1-3: Same provisioning flow as above
-4. `analyze_access_request` for Administrator + Script Deploy roles → HIGH risk (Script Dev vs Production conflict)
-5. Create Jira ticket `NS-ONBOARD-2847` with SOD check results pre-filled
-6. NetSuite account left inactive
-7. Notify manager: "Provisioning complete. NetSuite access pending IT approval — see NS-ONBOARD-2847"
+Steps:
+1. Parse: target = james.park, role = Report-Viewer, requester = lisa.nguyen
+2. `get_user_violations("james.park@fivetran.com")` → user found, current roles: Employee Center
+3. `get_user_violations("lisa.nguyen@fivetran.com")` → L4 authority
+4. `analyze_access_request` → CLEAR (no conflicts)
+5. Route: Lisa (L4) has sufficient authority. Assign ticket back to her for self-approval.
+6. Comment: "SOD check CLEAR. Lisa Nguyen (L4) has authority to approve. Assign role and close ticket."
 
 ---
 
 ## Troubleshooting
 
-**Okta user stuck in STAGED (not PROVISIONED)**
-Cause: Activation email not sent or group assignment failed.
-Solution: Manually trigger activation via Okta admin console or re-send activation email.
+**Requester not found in NetSuite**
+Cause: Ticket raised by someone who is not a NetSuite user (e.g., HR or external party).
+Solution: Default to L1 (no approval authority). Route to the requester's manager for sponsorship, then re-evaluate.
 
-**Celigo sync completes but NetSuite record not found**
-Cause: Sync created a Contact record instead of Employee record (field mapping issue).
-Solution: Check Celigo flow field mapping for `employeeType`; ensure it maps to `Employee` not `Contact`.
+**Role name not recognized**
+Cause: Ticket uses an informal name (e.g., "Controller access" instead of "Fivetran-Controller").
+Solution: Call `search_permissions(search_term={role_name_from_ticket})` to fuzzy-match to a known role. If no match, comment on ticket asking for the exact NetSuite role name.
 
-**SOD check returns violations for standard roles**
-Cause: Role set for job title has a built-in conflict (role definition issue, not user issue).
-Solution: Call `get_role_conflicts({role})` to identify the conflict, then escalate to NetSuite admin to fix the role definition. Do not assign conflicting roles.
+**Multiple roles requested in one ticket**
+Cause: Ticket says "Assign roles Fivetran-AP-Processor and Fivetran-AP-Approver to user X".
+Solution: Run `analyze_access_request` with ALL requested roles together. A combination that is individually safe may be CRITICAL together. Route based on the highest severity result.
 
-**Jira ticket creation fails**
-Cause: Jira API credentials expired or project key incorrect.
-Solution: Check `references/system-guide.md` for current Jira project key and auth token rotation schedule.
-
-**User reports cannot log in to NetSuite after standard onboarding**
-Cause: User is still set to inactive in NetSuite despite enablement step.
-Solution: Call `get_user_violations(user_identifier={email})` to check current status; if inactive, re-trigger enablement.
+**Requester and target user are the same person**
+Cause: User requesting their own elevated access.
+Solution: Flag immediately. Self-approval is a SOD violation. Route to the requester's manager minimum, regardless of the requester's authority level. Add comment: "Self-approval not permitted per SOX policy. Escalated to manager."
