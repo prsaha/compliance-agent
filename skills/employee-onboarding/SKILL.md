@@ -14,9 +14,12 @@ metadata:
 This skill orchestrates new employee provisioning across four systems in sequence:
 Okta → Workday → Celigo → NetSuite
 
-Two paths exist based on access level:
-- **Standard user**: provision across all systems, enable in NetSuite with standard roles
-- **Superuser**: same provisioning + create a Jira ticket for elevated role assignment and manual NetSuite enablement by an admin
+This skill applies five workflow design patterns:
+- **Pattern 1 — Sequential Orchestration**: strict step order with hard dependencies (each step passes its output to the next)
+- **Pattern 2 — Multi-MCP Coordination**: data flows across Okta, Workday, Celigo, and NetSuite; each system's output is the next system's input
+- **Pattern 3 — Iterative Refinement**: SOD role check loops up to 3 times, removing conflicts and suggesting alternatives before escalating
+- **Pattern 4 — Context-Aware Tool Selection**: access level, department, and job title determine which path and which tools to invoke
+- **Pattern 5 — Domain-Specific Intelligence**: SOX compliance rules, Compliance Officer independence requirements, and superuser gating embedded throughout
 
 Always run an SOD compliance check before assigning any roles. Never assign roles that create
 CRITICAL or HIGH violations without an approved exception.
@@ -108,6 +111,28 @@ Celigo is the integration layer that syncs the Workday record to NetSuite. This 
 
 ---
 
+### Step 3.5: Context-Aware Routing Decision (Pattern 4)
+
+Before proceeding to NetSuite, determine the correct path and tool set based on context.
+Do not rely on the intake form's "superuser" flag alone — validate it here.
+
+```
+Job title in role-matrix superuser list?         → Path B (Superuser)
+        ↓ No
+Department = IT AND roles include Admin/Script?  → Path B (Superuser)
+        ↓ No
+Department = Finance AND role includes Approval? → Path A + Extended SOD check (all AP/GL rules)
+        ↓ No
+Department = Compliance AND title = Officer?     → Path A + Independence check (call list_sod_rules, filter COMPLIANCE_OFFICER_INDEPENDENCE)
+        ↓ No
+Standard role set, no elevated access?           → Path A (Standard)
+```
+
+Use `recommend_roles_for_job_title` + `references/role-matrix.md` to confirm the role set
+before routing. If context is ambiguous, ask the requestor to confirm before proceeding.
+
+---
+
 ### Step 4: NetSuite — Role Assignment and Enablement
 
 This step differs based on access level.
@@ -117,14 +142,41 @@ This step differs based on access level.
 #### Path A: Standard User
 
 **Actions:**
-1. Look up the employee in NetSuite by email: call `get_user_violations(user_identifier={email})` — this confirms the record exists and returns the internal user ID
-2. Determine the standard role set for this job title and department: call `recommend_roles_for_job_title(job_title={title}, department={department})`
-3. Run SOD compliance check on the recommended roles: call `analyze_access_request(user_id={id}, requested_role={each role}, include_existing_roles=true)`
-4. If all roles are CLEAR or LOW risk: assign roles directly in NetSuite via `validate_job_role`
-5. Enable the user in NetSuite: set `isInactive: false`
-6. Confirm enablement: call `get_user_violations(user_identifier={email})` — user should appear as active with assigned roles
+1. Look up the employee in NetSuite by email: call `get_user_violations(user_identifier={email})` — confirms the record exists and returns the internal user ID
+2. Determine the standard role set: call `recommend_roles_for_job_title(job_title={title}, department={department})`
+3. **SOD Refinement Loop (Pattern 3 — Iterative Refinement)** — run up to 3 iterations:
 
-**Verify:** User can log in to NetSuite. Status is active. Roles match the approved set.
+```
+Iteration 1:
+  → call analyze_access_request(user_id, proposed_roles, include_existing_roles=true)
+  → CLEAR or LOW?  Proceed to step 4.
+  → MEDIUM/HIGH/CRITICAL conflict found?
+      - Identify the conflicting role using get_role_conflicts({role})
+      - Remove the conflicting role from the proposed set
+      - Call recommend_roles_for_job_title for an alternative with lower risk
+      - Go to Iteration 2
+
+Iteration 2:
+  → Re-run analyze_access_request with revised role set
+  → CLEAR or LOW?  Proceed to step 4.
+  → Still conflicting?  Remove conflict, substitute alternative → Iteration 3
+
+Iteration 3:
+  → Re-run analyze_access_request with further revised role set
+  → CLEAR or LOW?  Proceed to step 4.
+  → Still CRITICAL or HIGH after 3 iterations?
+      → Escalate to Path B (Superuser) — create Jira ticket, do not enable
+```
+
+4. If role set is clean after refinement: assign roles in NetSuite via `validate_job_role`
+5. Enable the user in NetSuite: set `isInactive: false`
+6. Confirm enablement: call `get_user_violations(user_identifier={email})` — user should appear active with assigned roles
+
+**Verify:** User is active in NetSuite. Roles match the refined approved set. No open violations.
+
+**Why iterative?** The recommended role set may include roles that conflict when combined.
+Removing one role and substituting a narrower alternative is almost always sufficient to reach
+a clean state without escalating to a superuser workflow unnecessarily.
 
 ---
 
