@@ -437,6 +437,8 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
         # Select only the tools relevant to this message (saves ~8K tokens per request)
         relevant_tools = select_tools_for_intent(user_message, MCP_TOOLS) if MCP_TOOLS else []
         tools = relevant_tools if relevant_tools else MCP_TOOLS
+        # Haiku dispatches tools (fast, cheap); Opus synthesizes the final answer (quality)
+        haiku_with_tools = haiku.bind_tools(tools)
         llm_with_tools = llm.bind_tools(tools)
 
         # Build message list: thread history (if any) + current user message
@@ -453,7 +455,12 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
 
         for turn in range(max_turns):
             trimmed = _trim_history(messages)
-            response = llm_with_tools.invoke([system_msg] + trimmed)
+            # Use Haiku for tool-selection turns (no tool results in history yet).
+            # Switch to Opus once tool results are present — that's the synthesis turn
+            # where reasoning quality matters most.
+            has_tool_results = any(isinstance(m, ToolMessage) for m in messages)
+            active_model = llm_with_tools if has_tool_results else haiku_with_tools
+            response = active_model.invoke([system_msg] + trimmed)
 
             # No tool calls → extract final text and stop
             if not response.tool_calls:
