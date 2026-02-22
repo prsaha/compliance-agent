@@ -1,6 +1,6 @@
 ---
 name: sod-compliance
-description: SOD (Segregation of Duties) compliance workflows for Celigo's NetSuite environment. Use when asked about user access violations or role conflicts ("can we assign Controller to John?", "what roles does Jane have?"), compliance risk scores, CRITICAL/HIGH violation lists, exception approvals or requests, SOX audit readiness, compliance reports, role permission analysis, manual NetSuite sync, compensating controls, or SOD rule lookups. Handles multi-step access review: fetches current roles, analyzes full role combination for conflicts, and gives a risk-scored recommendation. Requires the compliance MCP server running at localhost:8080.
+description: "SOD (Segregation of Duties) compliance workflows for Celigo's NetSuite environment. Use when asked about user access violations or role conflicts, compliance risk scores, CRITICAL/HIGH violation lists, exception approvals or requests, SOX audit readiness, compliance reports, role permission analysis, manual NetSuite sync, compensating controls, or SOD rule lookups. Handles multi-step access review — fetches current roles, analyzes full role combination for conflicts, and gives a risk-scored recommendation. Requires the compliance MCP server running at localhost:8080."
 metadata:
   author: Celigo SysEng
   version: 1.0.0
