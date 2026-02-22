@@ -358,7 +358,7 @@ def fetch_thread_history(client, channel: str, thread_ts: str, bot_user_id: str,
         return []
 
 
-@traceable(name="slack_compliance_query", run_type="chain")
+@traceable(name="slack_compliance_query", run_type="chain", tags=["slack", "compliance"])
 def process_with_claude(user_message: str, user_email: str, mentioned_users: Optional[Dict[str, Dict]] = None,
                         thread_history: Optional[list] = None) -> str:
     """
