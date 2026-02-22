@@ -16,13 +16,28 @@ from models.database import (
     SODRule,
     Violation,
     ComplianceScan,
+    SyncMetadata,
     AgentLog,
     Notification,
     AuditTrail,
     UserStatus,
     ViolationSeverity,
     ViolationStatus,
-    ScanStatus
+    ScanStatus,
+    SyncStatus,
+    SyncType
+)
+
+from models.approved_exception import (
+    ApprovedExceptionModel,
+    ExceptionControlModel,
+    ExceptionViolationModel,
+    ExceptionReviewModel,
+    CompensatingControl,
+    ExceptionStatus,
+    ImplementationStatus,
+    RemediationStatus,
+    ReviewOutcome,
 )
 
 __all__ = [
@@ -33,19 +48,33 @@ __all__ = [
     'get_db_session',
     'init_database',
     'enable_pgvector',
-    # Models
+    # Core models
     'User',
     'Role',
     'UserRole',
     'SODRule',
     'Violation',
     'ComplianceScan',
+    'SyncMetadata',
     'AgentLog',
     'Notification',
     'AuditTrail',
-    # Enums
+    # Exception management models
+    'ApprovedExceptionModel',
+    'ExceptionControlModel',
+    'ExceptionViolationModel',
+    'ExceptionReviewModel',
+    'CompensatingControl',
+    # Core enums
     'UserStatus',
     'ViolationSeverity',
     'ViolationStatus',
-    'ScanStatus'
+    'ScanStatus',
+    'SyncStatus',
+    'SyncType',
+    # Exception enums
+    'ExceptionStatus',
+    'ImplementationStatus',
+    'RemediationStatus',
+    'ReviewOutcome',
 ]

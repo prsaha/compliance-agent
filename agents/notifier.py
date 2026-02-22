@@ -16,8 +16,8 @@ from datetime import datetime
 from enum import Enum
 import json
 
-from langchain_anthropic import ChatAnthropic
-from langchain_core.prompts import ChatPromptTemplate
+from services.llm import get_llm_from_config, LLMMessage
+from services.cache_service import get_cache_service
 
 from models.database import (
     Notification, NotificationChannel, NotificationStatus,
@@ -25,6 +25,7 @@ from models.database import (
 )
 from repositories.violation_repository import ViolationRepository
 from repositories.user_repository import UserRepository
+from repositories.job_role_mapping_repository import JobRoleMappingRepository
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +45,10 @@ class NotificationAgent:
         self,
         violation_repo: ViolationRepository,
         user_repo: UserRepository,
+        job_role_mapping_repo: Optional[JobRoleMappingRepository] = None,
         sendgrid_api_key: Optional[str] = None,
-        slack_webhook_url: Optional[str] = None
+        slack_webhook_url: Optional[str] = None,
+        enable_cache: bool = True
     ):
         """
         Initialize Notification Agent
@@ -53,11 +56,26 @@ class NotificationAgent:
         Args:
             violation_repo: Violation repository instance
             user_repo: User repository instance
+            job_role_mapping_repo: Job role mapping repository instance
             sendgrid_api_key: SendGrid API key for email
             slack_webhook_url: Slack webhook URL for notifications
+            enable_cache: Whether to enable Redis caching for AI analysis
         """
         self.violation_repo = violation_repo
         self.user_repo = user_repo
+        self.job_role_mapping_repo = job_role_mapping_repo
+
+        # Initialize cache service
+        redis_url = os.getenv('REDIS_URL')
+        if not redis_url:
+            logger.warning("REDIS_URL not set — cache service will be disabled")
+            enable_cache = False
+            redis_url = ''
+        self.cache = get_cache_service(redis_url=redis_url, enabled=enable_cache)
+        if self.cache.enabled:
+            logger.info("Cache service enabled for AI analysis")
+        else:
+            logger.warning("Cache service disabled - all LLM calls will be fresh")
 
         # Initialize email client (SendGrid)
         self.sendgrid_api_key = sendgrid_api_key or os.getenv('SENDGRID_API_KEY')
@@ -82,20 +100,15 @@ class NotificationAgent:
         if self.slack_enabled:
             logger.info("Slack notifications enabled")
 
-        # Initialize AI analysis (Claude)
-        anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
-        if anthropic_api_key:
-            self.llm = ChatAnthropic(
-                model="claude-sonnet-4-5",
-                temperature=0,
-                max_tokens=2048,
-                anthropic_api_key=anthropic_api_key
-            )
+        # Initialize AI analysis using LLM abstraction layer
+        try:
+            self.llm = get_llm_from_config()
             self.ai_enabled = True
-            logger.info("AI analysis enabled (Claude Sonnet 4.5)")
-        else:
+            logger.info(f"AI analysis enabled ({self.llm.get_provider_name()} - {self.llm.get_model_name()})")
+        except Exception as e:
+            self.llm = None
             self.ai_enabled = False
-            logger.warning("ANTHROPIC_API_KEY not set. AI analysis disabled.")
+            logger.warning(f"AI analysis disabled: {str(e)}")
 
         logger.info(f"Notification Agent initialized (Email: {self.email_enabled}, Slack: {self.slack_enabled}, AI: {self.ai_enabled})")
 
@@ -656,10 +669,9 @@ Recommended Actions:
         # Send via requested channels
         if 'EMAIL' in channels and self.email_enabled:
             email_result = self._send_email(
-                to_emails=recipients,
+                recipients=recipients,
                 subject=subject,
-                html_content=self._format_compliance_report_html(scan_summary),
-                plain_content=message
+                message=message
             )
             results['channels']['EMAIL'] = email_result
 
@@ -994,16 +1006,30 @@ Recommended Actions:
         """
         Generate AI-powered analysis of why user has compliance issues
 
+        Uses Redis cache to avoid redundant LLM calls for identical scenarios.
+
         Args:
             user: User object
             violations: List of violations for this user
             role_names: List of role names assigned to user
 
         Returns:
-            AI-generated analysis text
+            AI-generated analysis text (cached if available)
         """
         if not self.ai_enabled or not violations:
             return ""
+
+        # Check cache first
+        violation_ids = [str(v.id) for v in violations]
+        cached_analysis = self.cache.get_ai_analysis(
+            user_id=str(user.id),
+            violation_ids=violation_ids,
+            role_names=role_names
+        )
+
+        if cached_analysis:
+            logger.info(f"Using cached AI analysis for user {user.name}")
+            return cached_analysis
 
         # Prepare violation details
         violation_details = []
@@ -1017,34 +1043,6 @@ Recommended Actions:
             }
             violation_details.append(detail)
 
-        # Create prompt
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a compliance analyst explaining SOD (Segregation of Duties) violations.
-
-Your task is to analyze why a user has compliance issues based on their role assignments.
-
-Provide a clear, concise summary (3-4 sentences) that:
-1. Identifies the problematic role combination
-2. Explains the specific risks this creates
-3. States why this violates SOD principles
-4. Suggests the primary remediation action
-
-Be direct and specific. Focus on business risk, not technical details."""),
-            ("human", """Analyze this compliance issue:
-
-User: {user_name}
-Department: {department}
-Title: {title}
-
-Assigned Roles:
-{roles}
-
-Violations Detected: {violation_count}
-{violation_summary}
-
-Provide a brief analysis explaining why these roles are problematic and what should be done.""")
-        ])
-
         # Format violation summary
         violation_summary_lines = []
         for i, v in enumerate(violations[:3], 1):  # Top 3 violations
@@ -1057,19 +1055,94 @@ Provide a brief analysis explaining why these roles are problematic and what sho
         if len(violations) > 3:
             violation_summary += f"\n... and {len(violations) - 3} more violations"
 
+        # Check if this role combination is acceptable for user's job title
+        job_role_context = ""
+        if self.job_role_mapping_repo and user.title:
+            try:
+                validation_result = self.job_role_mapping_repo.check_role_combination_acceptable(
+                    user.title,
+                    role_names
+                )
+
+                if validation_result.get('is_acceptable'):
+                    # This is an ACCEPTABLE combination for this job title
+                    job_role_context = f"""
+
+═══════════════════════════════════════════════════════════════════
+IMPORTANT JOB ROLE CONTEXT - READ THIS FIRST
+═══════════════════════════════════════════════════════════════════
+
+For job title '{user.title}', this role combination is ACCEPTABLE and STANDARD per company policy.
+
+✅ This is NOT an unexpected configuration - it is the PROPER setup for this role.
+
+Business Justification:
+{validation_result.get('business_justification', 'Role combination approved for this job function')}
+
+Required Compensating Controls: {', '.join(validation_result.get('typical_controls', []))}
+Requires Controls: {"YES" if validation_result.get('requires_controls') else "NO"}
+Approval Level: {validation_result.get('approval_required', 'Standard approval')}
+
+Your analysis MUST acknowledge that:
+1. This configuration is EXPECTED and APPROVED for this job title
+2. While technical SOD conflicts exist, they are ACCEPTABLE with proper controls
+3. Focus on COMPENSATING CONTROLS (monitoring, approval workflows, audit logs)
+4. DO NOT recommend role removal - recommend control implementation instead
+5. This is a legitimate business need, not a compliance violation to fix
+
+Shift your tone from "violation that must be fixed" to "accepted configuration that requires oversight."
+═══════════════════════════════════════════════════════════════════
+"""
+            except Exception as e:
+                logger.error(f"Error checking job role mapping: {str(e)}")
+
+        # Create messages using LLM abstraction layer
+        system_message = """You are a compliance analyst. Provide ONLY a brief summary paragraph.
+
+STRICT REQUIREMENTS:
+- Maximum 3-4 sentences total
+- NO markdown headers (no #, ##, ###)
+- NO bullet points or lists
+- NO sections (Summary, Risk Context, Required Action, etc.)
+- Plain text paragraph ONLY
+
+Format: One short paragraph that states:
+1. Is this configuration acceptable for the job title? (Yes/No)
+2. Key risk or justification (one sentence)
+3. Primary action needed (implement controls OR remove role)
+
+If ACCEPTABLE for job title: Focus on compensating controls needed.
+If NOT ACCEPTABLE: State which role to remove."""
+
+        user_message = f"""User: {user.name} ({user.title or "Unknown"})
+Roles: {', '.join(role_names)}
+Violations: {len(violations)}
+{violation_summary}{job_role_context}
+
+Provide 2-3 sentence summary: Is this OK for the job title? What action is needed?"""
+
+        messages = [
+            LLMMessage(role="system", content=system_message),
+            LLMMessage(role="user", content=user_message)
+        ]
+
         # Generate analysis
         try:
-            chain = prompt | self.llm
-            response = chain.invoke({
-                "user_name": user.name,
-                "department": user.department or "Unknown",
-                "title": user.title or "Unknown",
-                "roles": "\n".join([f"- {role}" for role in role_names]),
-                "violation_count": len(violations),
-                "violation_summary": violation_summary
-            })
+            response = self.llm.generate(messages)
+            analysis = response.content.strip()
 
-            return response.content.strip()
+            # Cache the result for future use (24 hour TTL)
+            if analysis:
+                self.cache.set_ai_analysis(
+                    user_id=str(user.id),
+                    violation_ids=violation_ids,
+                    role_names=role_names,
+                    analysis=analysis,
+                    ttl=86400  # 24 hours
+                )
+                logger.info(f"Cached AI analysis for user {user.name}")
+
+            return analysis
 
         except Exception as e:
             logger.error(f"Failed to generate AI analysis: {str(e)}")

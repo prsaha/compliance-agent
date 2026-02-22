@@ -26,11 +26,12 @@ os.environ['DATABASE_URL'] = 'postgresql://compliance_user:compliance_pass@local
 from models.database_config import DatabaseConfig
 from repositories.user_repository import UserRepository
 from repositories.role_repository import RoleRepository
+from repositories.sod_rule_repository import SODRuleRepository
 from repositories.violation_repository import ViolationRepository
 from repositories.sod_rule_repository import SODRuleRepository
 from services.netsuite_client import NetSuiteClient
 from agents.orchestrator import create_orchestrator
-from agents.knowledge_base import create_knowledge_base
+from agents.knowledge_base_pgvector import create_knowledge_base
 from agents.risk_assessor import create_risk_assessor
 from utils.token_tracker import get_global_tracker, reset_global_tracker
 
@@ -56,9 +57,9 @@ def main():
     token_tracker = get_global_tracker()
     reset_global_tracker()
 
-    print_header("END-TO-END AGENTIC WORKFLOW COMPLIANCE SYSTEM DEMO")
+    print_header("END-TO-END AGENTIC COMPLIANCE SYSTEM DEMO")
     print("This demo demonstrates the complete compliance run by agents :")
-    print("  • Data collection from NetSuite")
+    print("  • Data collection from SaaS platform (NetSuite)")
     print("  • SOD violation detection")
     print("  • Risk assessment and scoring")
     print("  • Knowledge base queries")
@@ -404,23 +405,25 @@ def main():
     print("Creating Knowledge Base Agent...")
     db_config = DatabaseConfig()
     session = db_config.get_session()
-    role_repo = RoleRepository(session)
-    kb = create_knowledge_base(role_repo=role_repo)
+    sod_rule_repo = SODRuleRepository(session)
+    kb = create_knowledge_base(session=session, sod_rule_repo=sod_rule_repo)
 
-    print("✅ Knowledge Base initialized")
-    print(f"   Total Rules: {len(kb.sod_rules)}")
-    print(f"   Embeddings Created: {len(kb.rule_embeddings)}")
-    print(f"   Model: sentence-transformers/all-MiniLM-L6-v2")
+    # Get stats from pgvector
+    stats = kb.get_knowledge_base_stats()
+
+    print("✅ Knowledge Base initialized (pgvector)")
+    print(f"   Total Rules: {stats['total_rules']}")
+    print(f"   Rules with Embeddings: {stats['rules_with_embeddings']}")
+    print(f"   Provider: {stats['embedding_provider']}")
+    print(f"   Dimension: {stats['embedding_dimension']}")
 
     # Semantic search
     print("\n🔍 Performing semantic search...")
     query = "financial approval conflicts"
     print(f"   Query: \"{query}\"")
 
-    db_config = DatabaseConfig()
-    session = db_config.get_session()
-    role_repo = RoleRepository(session)
-    kb = create_knowledge_base(role_repo=role_repo)
+    sod_rule_repo = SODRuleRepository(session)
+    kb = create_knowledge_base(session=session, sod_rule_repo=sod_rule_repo)
 
     results = kb.search_similar_rules(
         query=query,
@@ -430,27 +433,25 @@ def main():
 
     print(f"\n✅ Found {len(results)} similar rules:")
     for i, result in enumerate(results, 1):
-        rule = result['rule']
-        similarity = result['similarity']
-        print(f"\n   {i}. {rule['rule_name']} (Similarity: {similarity:.2f})")
-        print(f"      Type: {rule['rule_type']}")
-        print(f"      Severity: {rule['severity']}")
-        print(f"      Description: {rule['description'][:80]}...")
+        rule_name = result.get('rule_name', 'Unknown')
+        similarity = result.get('similarity', 0)
+        rule_type = result.get('category', 'Unknown')
+        severity = result.get('severity', 'Unknown')
+        description = result.get('description', 'No description')[:80]
+        print(f"\n   {i}. {rule_name} (Similarity: {similarity:.2f})")
+        print(f"      Type: {rule_type}")
+        print(f"      Severity: {severity}")
+        print(f"      Description: {description}...")
 
     # Get knowledge base stats
-    db_config = DatabaseConfig()
-    session = db_config.get_session()
-    role_repo = RoleRepository(session)
-    kb = create_knowledge_base(role_repo=role_repo)
     stats = kb.get_knowledge_base_stats()
 
     print(f"\n📊 Knowledge Base Statistics:")
-    print(f"   Rules by Type:")
-    for rule_type, count in stats['rules_by_type'].items():
-        print(f"      {rule_type}: {count}")
-    print(f"   Rules by Severity:")
-    for severity, count in stats['rules_by_severity'].items():
-        print(f"      {severity}: {count}")
+    print(f"   Total Rules: {stats['total_rules']}")
+    print(f"   Rules with Embeddings: {stats['rules_with_embeddings']}")
+    print(f"   Violations Embedded: {stats['total_violations_embedded']}")
+    print(f"   Provider: {stats['embedding_provider']}")
+    print(f"   Dimension: {stats['embedding_dimension']}")
 
     # ========================================================================
     # STEP 6: Notification System

@@ -10,13 +10,16 @@ This agent is responsible for:
 """
 
 import logging
+import os
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 from collections import defaultdict
 from sqlalchemy import func, and_, desc
 from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage
 from langchain_core.output_parsers import JsonOutputParser
+from utils.langchain_callback import TokenTrackingCallback
 
 from models.database import (
     Violation, ViolationSeverity, ViolationStatus,
@@ -47,7 +50,13 @@ class RiskAssessmentAgent:
         """
         self.violation_repo = violation_repo
         self.user_repo = user_repo
-        self.llm = ChatAnthropic(model=llm_model, temperature=0)
+        self._token_callback = TokenTrackingCallback(agent_name="risk_assessor", operation="risk_scoring")
+        self.llm = ChatAnthropic(
+            model=llm_model,
+            temperature=0,
+            max_tokens=1024,
+            callbacks=[self._token_callback]
+        )
 
         logger.info(f"Risk Assessment Agent initialized with model: {llm_model}")
 
@@ -345,7 +354,8 @@ class RiskAssessmentAgent:
 
         high_risk_users = []
 
-        for user in all_users[:100]:  # Sample for performance
+        batch_size = int(os.getenv('RISK_ASSESSMENT_BATCH_SIZE', '0')) or len(all_users)
+        for user in all_users[:batch_size]:
             risk_result = self.calculate_user_risk_score(
                 str(user.id),
                 include_historical=False  # Skip for performance

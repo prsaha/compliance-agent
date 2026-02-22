@@ -32,7 +32,7 @@ class ViolationRepository:
         Create a new violation
 
         Args:
-            violation_data: Dictionary with violation fields
+            violation_data: Dictionary with violation fields (including optional 'embedding')
 
         Returns:
             Created Violation object
@@ -48,6 +48,7 @@ class ViolationRepository:
             description=violation_data.get('description'),
             conflicting_roles=violation_data.get('conflicting_roles', []),
             conflicting_permissions=violation_data.get('conflicting_permissions', []),
+            embedding=violation_data.get('embedding'),  # NEW: Support for pgvector embeddings
             violation_metadata=violation_data.get('violation_metadata', {})
         )
 
@@ -55,7 +56,7 @@ class ViolationRepository:
         self.session.commit()
         self.session.refresh(violation)
 
-        logger.info(f"Created violation: {violation.title} (severity: {violation.severity})")
+        logger.info(f"Created violation: {violation.title} (severity: {violation.severity}, embedded: {violation.embedding is not None})")
         return violation
 
     def get_violation_by_id(self, violation_id: str) -> Optional[Violation]:
@@ -347,3 +348,43 @@ class ViolationRepository:
 
         logger.info(f"Updated risk score for violation {violation_id}: {new_risk_score}")
         return violation
+
+    def update_embedding(self, violation_id: str, embedding: List[float]) -> Optional[Violation]:
+        """
+        Update the embedding of a violation (Step 8: Violation Embedding)
+
+        Args:
+            violation_id: Violation UUID
+            embedding: Vector embedding
+
+        Returns:
+            Updated Violation object
+        """
+        violation = self.get_violation_by_id(violation_id)
+
+        if not violation:
+            return None
+
+        violation.embedding = embedding
+        self.session.commit()
+        self.session.refresh(violation)
+
+        logger.info(f"Updated embedding for violation {violation_id}")
+        return violation
+
+    def get_violations_without_embeddings(self, limit: int = 100) -> List[Violation]:
+        """
+        Get violations that don't have embeddings yet (for backfilling)
+
+        Args:
+            limit: Maximum number of violations to return
+
+        Returns:
+            List of Violation objects without embeddings
+        """
+        return (
+            self.session.query(Violation)
+            .filter(Violation.embedding.is_(None))
+            .limit(limit)
+            .all()
+        )

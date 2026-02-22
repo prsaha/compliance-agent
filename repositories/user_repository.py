@@ -81,7 +81,7 @@ class UserRepository:
 
     def get_user_by_email(self, email: str) -> Optional[User]:
         """
-        Get user by email
+        Get user by email (case-insensitive)
 
         Args:
             email: User email address
@@ -89,7 +89,7 @@ class UserRepository:
         Returns:
             User object or None
         """
-        return self.session.query(User).filter(User.email == email).first()
+        return self.session.query(User).filter(User.email.ilike(email)).first()
 
     def get_user_by_uuid(self, uuid: str) -> Optional[User]:
         """
