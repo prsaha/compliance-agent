@@ -105,6 +105,7 @@ def fetch_mcp_tools():
 # Old hardcoded tools removed - now fetched dynamically from MCP server
 
 
+@traceable(run_type="tool")
 def call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
     """
     Call an MCP tool on the local server using JSON-RPC 2.0 protocol
