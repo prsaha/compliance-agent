@@ -5496,12 +5496,107 @@ MCP tools in Anthropic format (`{"name", "description", "input_schema"}`) work d
 
 ---
 
-**Document Version:** 1.6
-**Last Updated:** 2026-02-22 (Updated with Issues #27-30: LangSmith tracing, DM context, model pricing map, ChatAnthropic migration)
+---
+
+### Issue #31: LangSmith Evaluator Executor Cannot Access S3-Stored LLM Outputs
+
+**Severity:** 🔴 HIGH — caused all 3 online evaluators to silently return wrong scores
+
+#### What Happened
+
+Implemented 3 LangSmith online evaluators (`mcp_tool_called`, `mcp_tool_coverage`,
+`hallucination_heuristic`) and found they consistently scored 0 or raised `AttributeError`
+even on traces where MCP tools were clearly called (visible in the bot logs).
+
+Inspection showed the evaluator executor receives run data from the raw LangSmith API.
+Child LLM run `outputs.generations` — the field containing `tool_calls` — is stored in
+S3 and **not** included in the inline API response. The executor therefore sees:
+
+```python
+child_llm_run["outputs"] == {}   # always empty in executor context
+```
+
+The evaluator code tried `run.get("child_runs")[n].get("outputs").get("generations")`,
+which returned `[]`, making all tool-call detection fail.
+
+#### Root Cause
+
+LangSmith's evaluator executor fetches run data via the `/api/v1/runs/{id}` endpoint.
+Large output payloads (LLM generations) are offloaded to S3 and not returned inline.
+The Python SDK (`client.list_runs()`) transparently fetches from S3 on demand, which
+is why local dry-runs worked but the executor failed.
+
+#### Solution Applied
+
+**Two-part fix:**
+
+1. **`@traceable(run_type="tool")` on `call_mcp_tool()`** (`slack_bot_local.py:108`)
+   — creates a `tool`-type child span for each MCP call. The child run's `run_type`
+   and `name` ARE available inline (no S3); evaluators can detect tool calls directly.
+
+2. **Evaluator 3-layer detection** (in priority order):
+   - **Layer 1**: `child_run.run_type == "tool"` — definitive, zero cost
+   - **Layer 2**: `<tool_call>` XML in output → score 0 (Claude hallucinated calls)
+   - **Layer 3**: domain-specific text markers (fallback for pre-fix traces)
+
+#### Lesson Learned
+
+> **LangSmith online evaluators only have access to inline API fields.** Never try to
+> read `outputs.generations` or any field that might be in S3 storage. Use `run_type`
+> and `name` on child runs instead — these are always inline. If you need to detect
+> LLM tool calls in an evaluator, instrument `call_mcp_tool()` with
+> `@traceable(run_type="tool")` so the evidence is in the span tree, not the LLM output.
+
+---
+
+### Issue #32: Direct `process_with_claude()` Calls Bypass Tool Binding
+
+**Severity:** 🟡 MEDIUM — produces misleading test traces; does not affect production
+
+#### What Happened
+
+When testing evaluators, `process_with_claude()` was called directly from a standalone
+Python script (outside the Slack event handler). The resulting traces showed Claude
+outputting raw `<tool_call>` XML blocks in its response text instead of executing tools.
+This caused the evaluator to correctly score 0 — but the root cause was not obvious.
+
+#### Root Cause
+
+`process_with_claude()` calls `llm.bind_tools(MCP_TOOLS)` where `MCP_TOOLS` is the
+module-level list fetched from the MCP server at startup. When called from a standalone
+script that imports `slack_bot_local`, the module initializes correctly. However,
+the `llm_with_tools` binding is created inside `process_with_claude()` on each call, so
+the tools are always bound. The actual cause was that the standalone script called
+`process_with_claude()` without letting `@traceable` wire up the LangSmith run tree
+properly, causing `ChatAnthropic` to use a fallback code path that returned raw XML.
+
+The definitive test: if the response contains `<tool_call>` or `<tool_result>` XML,
+the agent failed to execute tools (regardless of whether the MCP server is up).
+
+#### Solution Applied
+
+- Added `<tool_call>` / `<tool_result>` XML detection to both `mcp_tool_called` and
+  `hallucination_heuristic` evaluators as an immediate score=0 signal.
+- Documented that all test traces must be triggered through the actual Slack bot event
+  handler, not via direct Python calls to `process_with_claude()`.
+
+#### Lesson Learned
+
+> **Always test LangSmith evaluator traces through the real Slack bot path.** Standalone
+> Python test scripts calling `process_with_claude()` directly may not reproduce the
+> exact LangChain callback chain, producing misleading traces. A response containing
+> `<tool_call>` XML is a reliable hallucination indicator — add it as an early-exit
+> score=0 check in all evaluators.
+
+---
+
+**Document Version:** 1.7
+**Last Updated:** 2026-02-22 (Updated with Issues #31-32: LangSmith evaluator S3 limitation, direct call tool-binding bypass)
 **Maintainer:** Compliance Engineering Team
 **Next Review:** After pre-commit hooks implementation
 
 **Change Log:**
+- v1.7 (2026-02-22): Added Issues #31-32 — LangSmith evaluator executor cannot access S3-stored LLM outputs; direct process_with_claude() calls bypass tool binding
 - v1.6 (2026-02-22): Added Issues #27-30 — LangSmith @traceable cost limitation, DM conversation context (thread_ts=None), LangSmith pricing table gaps, ChatAnthropic migration patterns
 - v1.5 (2026-02-18): Added Issues #18-26 — hardcoded credentials, insecure API key default, CORS wildcard, SQL injection, connection leaks, orchestrator method mismatch, token inefficiency, Slack markdown rendering, missing progress feedback
 - v1.4 (2026-02-12): Added Issue #17 - Python boolean syntax recurrence in tool #20 analyze_role_permissions; Added Architecture Decision: Agent Response with Attachments Pattern; Updated tool count: 11 → 20 MCP tools

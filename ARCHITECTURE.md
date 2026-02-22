@@ -2204,6 +2204,49 @@ compliance-agent/
 
 ---
 
+---
+
+## LangSmith Observability (V7.0)
+
+Every Slack query is now fully traced in LangSmith with cost, token counts, and tool execution spans.
+
+### Trace Structure
+
+```
+slack_compliance_query  [chain]          ← @traceable on process_with_claude()
+├── ChatAnthropic        [llm]           ← turn 1 LLM call (tool selection)
+├── call_mcp_tool        [tool]          ← @traceable(run_type="tool") — MCP execution
+├── call_mcp_tool        [tool]          ← parallel MCP calls if requested
+├── ChatAnthropic        [llm]           ← turn 2 LLM call (synthesis)
+└── ...                                 ← up to 5 turns
+```
+
+**Key design decision:** `call_mcp_tool()` is decorated with `@traceable(run_type="tool")`
+(not `run_type="chain"`). This makes the tool execution visible as a `tool`-type child span,
+which is the only reliable way for LangSmith online evaluators to detect MCP calls — the
+evaluator executor cannot access S3-stored LLM `outputs.generations` inline.
+
+### Thread Grouping
+
+| Slack surface | `thread_id` value |
+|---|---|
+| DM channel | `channel` (stable per user-pair) |
+| Channel thread | `f"{channel}-{thread_ts}"` |
+| Slash command | `f"{channel_id}-slash"` |
+
+### Online Evaluators (3 active)
+
+| Evaluator | ID | Fail condition |
+|---|---|---|
+| `mcp_tool_called` | `0fd34f6a` | Score = 0 → no tools executed |
+| `mcp_tool_coverage` | `36ea7cc4` | Score = 0 → access query missing `analyze_access_request` |
+| `hallucination_heuristic` | `67f9da6a` | Score = 0 → `<tool_call>` XML or ungrounded numeric claims |
+
+Each evaluator uses 3-layer detection: tool child runs → XML hallucination check → text grounding markers.
+See `docs/LESSONS_LEARNED.md` Issues #31-32 for the root cause of the S3 limitation.
+
+---
+
 **Version History**:
 - V1.0 (2026-01-15): Initial architecture
 - V2.0 (2026-01-28): Added data collection agent
@@ -2211,8 +2254,9 @@ compliance-agent/
 - V4.0 (2026-02-12): Added pgvector integration, RAG pattern, 19 MCP tools
 - V4.1 (2026-02-12): Added tool #20 analyze_role_permissions, Agent Response with Attachments pattern
 - V5.0 (2026-02-16): Added Slack bot, multi-turn agentic reasoning, 35 MCP tools
-- V6.0 (2026-02-18): Security hardening (API key enforcement, CORS, SQL injection fix, credential removal); Token optimization (prefix caching, tool routing, output sanitization, model right-sizing, token tracking); Slack Block Kit UI with animated thinking indicator; Exception management infrastructure (migrations, repositories, models); Incremental sync with lastModifiedDate; Full user risk assessment (batch configurable)
+- V6.0 (2026-02-18): Security hardening, token optimization, Slack Block Kit UI, exception management
+- V7.0 (2026-02-22): LangSmith full observability — Threads grouping, @traceable on call_mcp_tool(), 3 online evaluators with 3-layer detection logic
 
 ---
 
-**Document Status**: ✅ **COMPLETE AND UP-TO-DATE** (V6.0 — 2026-02-18)
+**Document Status**: ✅ **COMPLETE AND UP-TO-DATE** (V7.0 — 2026-02-22)

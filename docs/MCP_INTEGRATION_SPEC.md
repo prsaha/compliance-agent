@@ -2080,18 +2080,101 @@ LANGCHAIN_PROJECT=compliance-agent
 
 ---
 
+---
+
+## LangSmith Evaluator Integration
+
+### Overview
+
+Three online evaluators run automatically on every `slack_compliance_query` trace.
+
+### Evaluator Architecture Constraint
+
+**Critical:** LangSmith's evaluator executor fetches run data via `/api/v1/runs/{id}`.
+Child LLM `outputs.generations` are stored in S3 and are **not** available inline.
+Any evaluator code that attempts to read `child_run.outputs.generations` will see `{}`.
+
+**Implication for MCP tool detection:** Tool calls requested by the LLM (visible in
+`generations[*][*].message.kwargs.tool_calls`) cannot be read by the evaluator.
+The only reliable signal is `child_run.run_type == "tool"`, which requires
+`call_mcp_tool()` to be decorated with `@traceable(run_type="tool")`.
+
+### Evaluator Specs
+
+#### `mcp_tool_called` (ID: `0fd34f6a-78f3-4073-b71b-4a890162fdad`)
+
+```
+Fires on: every trace
+Pass (score=1): at least one tool-type child run OR text grounding markers in output
+Fail (score=0): no tool runs AND <tool_call> XML in output OR no grounding evidence
+```
+
+Detection priority:
+1. `child_run.run_type == "tool"` → score 1
+2. `<tool_call>` or `<tool_result>` in output → score 0 (hallucinated)
+3. Domain markers (`netsuite role`, `approval authority`, `sod conflict`, …) → score 1
+4. None of the above → score 0
+
+#### `mcp_tool_coverage` (ID: `36ea7cc4-7b1e-4994-b3dc-16443882dcbb`)
+
+```
+Fires on: access-request traces (message contains "assign", "role to", "grant", etc.)
+Pass (score=1): analyze_access_request tool run OR SOD conflict text in output
+Fail (score=0): access query with no analyze_access_request evidence
+N/A (score=1): non-access-request queries
+```
+
+#### `hallucination_heuristic` (ID: `67f9da6a-6413-4a72-80a9-31d99ac9134c`)
+
+```
+Fires on: every trace
+Pass (score=1): no numeric claims, OR claims present but response is grounded
+Fail (score=0): <tool_call> XML in output (hallucinated), OR ungrounded numeric claims
+```
+
+Grounding evidence (same as mcp_tool_called layers 1 and 3).
+
+### Slack Bot Tracing: `call_mcp_tool()`
+
+```python
+# slack_bot_local.py:108
+@traceable(run_type="tool")          # ← creates tool-type child span per MCP call
+def call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
+    ...
+    response = requests.post(f"{MCP_SERVER_URL}/mcp", json=mcp_request, ...)
+```
+
+Each invocation creates a child span with:
+- `run_type = "tool"`
+- `name = call_mcp_tool` (function name; tool_name is in `inputs`)
+- `inputs = {"tool_name": "...", "arguments": {...}}`
+- `outputs = {"output": "<tool result text>"}` (from return value)
+
+This is the primary signal all 3 evaluators rely on for the post-v1.3 traces.
+
+### Verified Scores (2026-02-22)
+
+| Trace | mcp_tool_called | mcp_tool_coverage | hallucination |
+|---|---|---|---|
+| "can you report violations" (real Slack) | ✅ 1 | N/A | ✅ 1 |
+| "tell me about my permissions" (real Slack) | ✅ 1 | N/A | ✅ 1 |
+| "assign Controller role" (XML hallucination) | ❌ 0 | ❌ 0 | ❌ 0 |
+
+---
+
 **Document Status**: ✅ Production — Up to Date
 **Last Updated**: 2026-02-22
 **Approvers**: Prabal Saha
 
 ---
 
-**Document Version**: 2.1.0
+**Document Version**: 2.2.0
 **Last Updated**: 2026-02-22
 **Author**: Prabal Saha + Claude (Sonnet 4.6)
 **Branch**: `RD-1036683-billing-schedule-automation-dev`
 
 **Change Log:**
+- v2.2.0 (2026-02-22): Added LangSmith Evaluator Integration section — evaluator specs, S3 constraint, call_mcp_tool @traceable, verified score table
 - v2.1.0 (2026-02-22): ChatAnthropic migration (raw SDK → LangChain), LangSmith full cost tracing, DM conversation context via fetch_dm_history(), TokenTrackingCallback, updated architecture diagram
 - v2.0.0 (2026-02-18): Updated to production status; resolved all open questions; added Slack Bot Integration section; added Security section; updated tool count 34→35; documented token optimization and Block Kit UI
 - v1.0.0 (2026-02-12): Initial design specification
