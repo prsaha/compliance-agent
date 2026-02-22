@@ -3,7 +3,8 @@ name: sod-compliance
 description: "SOD (Segregation of Duties) compliance workflows for Celigo's NetSuite environment. Use when asked about user access violations or role conflicts, compliance risk scores, CRITICAL/HIGH violation lists, exception approvals or requests, SOX audit readiness, compliance reports, role permission analysis, manual NetSuite sync, compensating controls, or SOD rule lookups. Handles multi-step access review — fetches current roles, analyzes full role combination for conflicts, and gives a risk-scored recommendation. Requires the compliance MCP server running at localhost:8080."
 metadata:
   author: Celigo SysEng
-  version: 1.0.0
+  version: 1.3.0
+  compatibility: "Claude Code, Claude.ai — requires compliance MCP server at localhost:8080"
   mcp-server: compliance-system
 ---
 
@@ -18,6 +19,16 @@ Always use MCP tools to fetch real data. Never fabricate violation counts, role 
 
 Consult `references/tool-catalog.md` for the full tool list with parameter details.
 Consult `references/sod-rules.md` for all 18 active SOD rules and their severity.
+
+---
+
+## Critical
+
+CRITICAL: Never answer compliance questions from training data. Every violation count,
+role name, risk score, and SOD rule MUST come from a live MCP tool call.
+
+CRITICAL: Always pass `include_existing_roles: true` to `analyze_access_request`.
+Omitting it produces false "0 conflicts" results for existing role combinations.
 
 ---
 
@@ -162,6 +173,15 @@ Use when: user wants to refresh compliance data from NetSuite.
 
 ---
 
+## Performance Notes
+
+- Take time to fetch all relevant data before synthesizing an answer
+- Run referenced workflow steps completely — do not skip verification steps
+- Quality of compliance decisions matters more than response speed
+- Do not skip the MCP Health Check when tools are unresponsive
+
+---
+
 ## Examples
 
 ### Example 1: Role assignment decision
@@ -203,6 +223,54 @@ Result: "Exception EX-2024-001 approved. Valid for 90 days (expires 2026-05-18).
 
 ---
 
+## Observability
+
+Three online evaluators run automatically in LangSmith on every trace:
+
+| Evaluator | Type | Fires on | Fail signal |
+|-----------|------|----------|-------------|
+| `mcp_tool_called` | Custom code | Every trace | Score = 0 |
+| `mcp_tool_coverage` | Custom code | Access-request traces | Score = 0 |
+| `hallucination_heuristic` | Custom code | Every trace | Score = 0 |
+
+### Evaluator logic (3-layer detection)
+
+Each evaluator checks in priority order:
+
+**Layer 1 — Tool child runs** (primary, definitive)
+`call_mcp_tool()` is decorated with `@traceable(run_type="tool")`, so every MCP call creates
+a `tool`-type child span. Evaluators check `child_runs[*].run_type == "tool"` first.
+
+**Layer 2 — Raw `<tool_call>` XML in output** (hallucination signal)
+If the response contains `<tool_call>` or `<tool_result>` markup, Claude generated tool calls
+as text without executing them. This is always a failure. Score = 0 on both `mcp_tool_called`
+and `hallucination_heuristic`.
+
+**Layer 3 — Data-grounding markers** (fallback for pre-v1.3 traces)
+If no tool child runs and no XML markup, scan the output for markers that only appear in
+live-data responses: `netsuite role`, `approval authority`, `sod conflict`, `risk score`, etc.
+
+### What each score means
+
+**`mcp_tool_called` = 0** — the agent answered without executing any MCP tool.
+Check: did `call_mcp_tool()` run? Is the MCP server up? Does the output contain `<tool_call>` XML?
+
+**`mcp_tool_coverage` = 0** — an access-request query was answered without calling
+`analyze_access_request`. This means the conflict check was skipped entirely.
+
+**`hallucination_heuristic` = 0** — the response either contained `<tool_call>` XML
+(fabricated calls) or stated specific numeric claims (violation counts, risk scores) with
+no grounding evidence. Open the trace and verify the numbers against tool results.
+
+### Key architecture note
+
+LangSmith's evaluator executor receives raw API run data. Child LLM `outputs.generations`
+are stored in S3 and are **not** available inline — evaluators cannot read them. This is why
+`call_mcp_tool()` must be `@traceable(run_type="tool")`: it creates a child span the
+evaluator CAN see without needing S3 access.
+
+---
+
 ## Troubleshooting
 
 **Error: "Connection refused" or tool timeouts**
@@ -224,3 +292,15 @@ Solution: Call `check_my_approval_authority` to see your approval limits, then e
 **Stale violation data**
 Cause: NetSuite sync hasn't run recently.
 Solution: Call `get_sync_status` to check last sync time, then `trigger_manual_sync(sync_type="incremental")`.
+
+**Evaluator scores all = 0 or AttributeError in LangSmith**
+Cause: Evaluator code tried to read `child_run.outputs.generations` — these are stored in S3
+and are not available in the inline API response the evaluator executor receives.
+Solution: Use `child_run.run_type == "tool"` to detect MCP calls (requires `@traceable(run_type="tool")`
+on `call_mcp_tool()`). Never try to parse LLM generation outputs inside an evaluator.
+
+**Evaluator shows `<tool_call>` XML hallucination but bot is running normally**
+Cause: `process_with_claude()` was called outside the Slack event context (e.g., a test script)
+before `llm.bind_tools(MCP_TOOLS)` ran. Claude fell back to outputting raw tool call markup.
+Solution: Always trigger test traces through the actual Slack bot, not by calling
+`process_with_claude()` directly from a standalone script.
