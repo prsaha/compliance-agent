@@ -1,8 +1,8 @@
 # Claude Code Project Guide: SOD Compliance System
 
 **Project:** AI-Powered Segregation of Duties (SOD) Compliance System
-**Version:** 1.1
-**Last Updated:** 2026-02-16
+**Version:** 1.2
+**Last Updated:** 2026-02-22
 **Primary Language:** Python 3.9+
 **Framework:** FastAPI with MCP (Model Context Protocol)
 
@@ -47,6 +47,38 @@ The Slack bot now supports **multi-step reasoning** where Claude can:
 - File: `compliance-agent/slack_bot_local.py` (lines 242-315)
 
 **See:** `docs/SLACK_INTEGRATION.md` for complete documentation.
+
+### 🔭 Latest Enhancement: LangSmith Observability + ChatAnthropic Migration (Feb 2026)
+
+Full distributed tracing is now wired into every LLM call site via LangSmith.
+
+**Tracing coverage:**
+
+| Call site | Mechanism | Trace name |
+|-----------|-----------|-----------|
+| Slack bot main loop | `ChatAnthropic` + `@traceable` | `slack_compliance_query` |
+| Direct Anthropic SDK calls | `@traceable` + `usage_metadata` | `claude.messages.create` |
+| LangChain agents (analyzer, risk_assessor, etc.) | Auto via `LANGCHAIN_TRACING_V2=true` | `RunnableSequence` |
+| `AnthropicProvider.generate/stream` | `@traceable` | `anthropic_provider.generate` |
+
+**Slack bot architecture change:**
+
+The Slack bot `process_with_claude()` was migrated from `AnthropicClientWrapper` (raw SDK) to `ChatAnthropic` (LangChain). This enables LangSmith to automatically populate `total_cost`, `prompt_tokens`, and `completion_tokens` per trace. A `TokenTrackingCallback` bridges LangChain's callback events to the existing `TokenTracker`.
+
+**DM conversation history:**
+
+`fetch_dm_history()` was added to carry the last 10 messages as context for DM channel requests (Slack DMs have no `thread_ts`, so `conversations_history()` is used instead of `conversations_replies()`).
+
+**Required env vars (add to `.env`):**
+```bash
+LANGSMITH_API_KEY=lsv2_pt_...
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_PROJECT=compliance-agent
+```
+
+**Verifying traces:** Open smith.langchain.com → project `compliance-agent`. Each Slack query appears as one `slack_compliance_query` trace with nested LLM call spans showing cost, token counts, and latency.
+
+**See:** `docs/LESSONS_LEARNED.md` Issues #27-30 for detailed root causes and solutions.
 
 ---
 
@@ -615,6 +647,15 @@ NETSUITE_RESTLET_URL="https://..."
 # LLM Providers (at least one required)
 ANTHROPIC_API_KEY="sk-ant-..."  # For Claude (SOD analysis)
 OPENAI_API_KEY="sk-..."         # For embeddings (knowledge base)
+
+# LangSmith Observability (required for cost/token tracing)
+LANGSMITH_API_KEY="lsv2_pt_..."
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_PROJECT=compliance-agent
+
+# Slack Bot
+SLACK_BOT_TOKEN="xoxb-..."
+SLACK_APP_TOKEN="xapp-..."
 ```
 
 ---
@@ -700,17 +741,20 @@ A: Create new connector in `connectors/`, implement `BaseConnector` interface, r
 
 ---
 
-## 🎯 Current Status (2026-02-12)
+## 🎯 Current Status (2026-02-22)
 
 ### ✅ Completed
 
 - [x] Phase 1: Autonomous data collection (daily + hourly sync)
 - [x] Phase 2: AI-powered SOD analysis (18 rules active)
 - [x] Phase 3: pgvector knowledge base (RAG operational)
-- [x] MCP server with 11 tools
+- [x] MCP server with 35 tools
 - [x] Production-ready scripts (restart, status check)
 - [x] Comprehensive documentation (4 major docs)
 - [x] 99.7% user coverage (1,928/1,933 users synced)
+- [x] **NEW**: Slack bot with multi-turn agentic reasoning (Feb 2026)
+- [x] **NEW**: LangSmith distributed tracing — cost, tokens, latency per query (Feb 2026)
+- [x] **NEW**: DM conversation context — bot maintains history across messages (Feb 2026)
 
 ### 🚧 Known Issues
 
@@ -767,7 +811,9 @@ Priority items:
 ---
 
 **Version History:**
+- v1.2 (2026-02-22): Added LangSmith observability section, ChatAnthropic migration notes, DM conversation context, updated env vars and current status
+- v1.1 (2026-02-16): Updated MCP tool count (11→35), Slack bot multi-turn agentic tool use
 - v1.0 (2026-02-12): Initial comprehensive guide
 
 **Maintained by:** AI Development Team
-**Last Verified:** 2026-02-12
+**Last Verified:** 2026-02-22

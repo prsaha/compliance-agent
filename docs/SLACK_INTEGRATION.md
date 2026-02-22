@@ -75,6 +75,95 @@ python slack_bot_local.py
 
 ---
 
+## 🔭 NEW: LangSmith Observability + ChatAnthropic Migration (Feb 2026)
+
+**Major Enhancement**: Full distributed tracing and cost observability via LangSmith, powered by a migration from the raw Anthropic SDK to LangChain's `ChatAnthropic`.
+
+### What Changed
+
+| Area | Before | After |
+|------|--------|-------|
+| LLM client | `AnthropicClientWrapper` (raw SDK) | `ChatAnthropic` (LangChain) |
+| LangSmith traces | `@traceable` spans only — no cost data | Full cost (`$0.027/query`), token counts, latency |
+| Conversation history | DMs lost context on every message | DMs carry last 10 messages via `conversations_history()` |
+| Token tracking | Manual accumulation, no LangSmith cost | `TokenTrackingCallback` bridges LangChain → `TokenTracker` |
+
+### Architecture: `process_with_claude()` (Post-Migration)
+
+```
+Slack @mention
+      │
+      ▼
+fetch_dm_history()  ─────────┐  (channel starts with "D")
+fetch_thread_history() ───────┤  (channel thread)
+                              │  (neither → empty history)
+                              ▼
+@traceable(name="slack_compliance_query", run_type="chain")
+process_with_claude(user_message, user_email, thread_history)
+  │
+  ├── ChatAnthropic(opus-4-6) .bind_tools(35 MCP tools)
+  │       └── TokenTrackingCallback → TokenTracker + LangSmith cost columns
+  │
+  ├── SystemMessage(content=[
+  │       {"type":"text", "text": STATIC_SYSTEM, "cache_control": {"type":"ephemeral"}},
+  │       {"type":"text", "text": dynamic_context}
+  │   ])
+  │
+  └── Agentic loop (up to 5 turns):
+        ├── llm_with_tools.invoke([system] + messages)
+        ├── if response.tool_calls → call_mcp_tool() → ToolMessage
+        └── else → return response.content (final answer)
+              │
+              └── Rolling summary via ChatAnthropic(haiku-4-5) when tool results > 2000 chars
+```
+
+### Required Environment Variables
+
+```bash
+# LangSmith (add to .env)
+LANGSMITH_API_KEY=lsv2_pt_...
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_PROJECT=compliance-agent
+```
+
+### Verifying Traces in LangSmith
+
+1. Open [smith.langchain.com](https://smith.langchain.com) → project **compliance-agent**
+2. **Traces** tab: each Slack query appears as `slack_compliance_query` with child spans per LLM turn
+3. **LLM Calls** tab: individual `ChatAnthropicMessages` spans with token counts
+4. **Cost & Tokens**: `total_cost`, `prompt_tokens`, `completion_tokens` populated automatically
+
+**Known limitation**: `claude-opus-4-6` is not in LangSmith's pricing table. Cost is approximated by mapping to `claude-3-opus-20240229` via `ls_model_name` metadata in `utils/anthropic_wrapper.py`.
+
+---
+
+## 💬 NEW: DM Conversation Context (Feb 2026)
+
+The bot now maintains conversation history in **direct message channels**, not only in channel threads.
+
+### How It Works
+
+```python
+# In handle_mention()
+if channel.startswith("D"):
+    # DM: use conversations_history() — DMs have no thread_ts
+    thread_history = fetch_dm_history(client, channel, bot_user_id, event["ts"])
+elif thread_ts and thread_ts != event["ts"]:
+    # Channel thread: use conversations_replies()
+    thread_history = fetch_thread_history(client, channel, thread_ts, bot_user_id, event["ts"])
+```
+
+`fetch_dm_history()` fetches the last 10 messages, skips "thinking" indicators (⏳), and maps `bot_id` presence to the `"assistant"` role so the LLM sees proper `HumanMessage` / `AIMessage` alternation.
+
+### Required Slack OAuth Scopes
+
+```
+im:history          # Read DM channel history (fetch_dm_history)
+channels:history    # Read public channel message history
+```
+
+---
+
 ## 🚀 NEW: Multi-Turn Agentic Tool Use (Feb 2026)
 
 **Major Enhancement**: The Slack bot now supports **multi-turn agentic reasoning**, enabling complex multi-step analysis without user intervention.
@@ -1020,6 +1109,6 @@ Your existing MCP server serves:
 
 ---
 
-**Document Version:** 1.0
-**Last Updated:** 2026-02-13
+**Document Version:** 2.0
+**Last Updated:** 2026-02-22 (ChatAnthropic migration, LangSmith tracing, DM conversation context)
 **Maintained By:** DevOps Team

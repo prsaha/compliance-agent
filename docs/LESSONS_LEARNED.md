@@ -5334,12 +5334,175 @@ Result: one message, animated, replaced by the real answer. Zero clutter.
 
 ---
 
-**Document Version:** 1.5
-**Last Updated:** 2026-02-18 (Updated with Issues #18-26: Security hardening, runtime fixes, token optimization, Slack UI)
+### Issue #27: LangSmith `@traceable` Cannot Populate Cost — Only LangChain Callbacks Can
+
+**Severity:** 🟡 MEDIUM — Observability gap
+
+#### What Happened
+
+After adding `@traceable` decorators and `usage_metadata` to all raw Anthropic SDK call sites, LangSmith's "Cost per Trace" and "Tokens per Trace" charts remained blank (showed 0.0). The `usage_metadata` dict appeared in trace `extra` but LangSmith did not compute cost from it.
+
+#### Root Cause
+
+LangSmith's server-side cost computation reads `prompt_tokens`, `completion_tokens`, and `total_cost` fields on the **Run** object. These fields are **only set by the LangChain callback system** (`on_llm_end` callback). The `@traceable` decorator wraps arbitrary Python functions — it does not invoke the LangChain callback pipeline, so those fields are never populated.
+
+Attempts to set them manually on the `RunTree` failed:
+```python
+rt.prompt_tokens = input_tokens  # ❌ ValueError: "RunTree" object has no field "prompt_tokens"
+```
+
+`usage_metadata` in `extra` provides token counts for the time-series charts (Tokens per Trace over time) but **not** the per-run cost columns.
+
+#### Solution Applied
+
+Migrated `process_with_claude()` in `slack_bot_local.py` from the raw `AnthropicClientWrapper` to `ChatAnthropic` (LangChain's Anthropic integration). Because `ChatAnthropic` goes through the LangChain callback chain, it automatically populates `prompt_tokens`, `completion_tokens`, and `total_cost` on every run.
+
+A custom `TokenTrackingCallback(BaseCallbackHandler)` bridges LangChain's `on_llm_end` events to the existing `TokenTracker` for internal cost dashboards.
+
+After migration: LangSmith showed `total_cost = $0.02754`, `prompt_tokens = 383` correctly.
+
+#### Lesson Learned
+
+> **`@traceable` alone cannot populate LangSmith cost columns.** Cost fields (`prompt_tokens`, `completion_tokens`, `total_cost`) only flow from LangChain callbacks. If you want full cost observability in LangSmith, use `ChatAnthropic` / `ChatOpenAI` rather than the raw SDK. Reserve `@traceable` for wrapping LangChain chain entry-points where you want a named parent span.
+
+---
+
+### Issue #28: DM Conversation Context Lost — `thread_ts` Is `None` in DMs
+
+**Severity:** 🟠 HIGH — Incorrect behavior
+
+#### What Happened
+
+When users messaged the bot in a Slack DM channel, the bot treated every message as an independent conversation. It forgot all prior context, causing answers like "I don't know what user you're referring to" after the user had just mentioned a user name in the previous message.
+
+#### Root Cause
+
+Thread replies in Slack channels carry a non-null `thread_ts` that equals the parent message's `ts`. In DMs, each message is its own root — `thread_ts` is `None` (or equals `event["ts"]`). Our original code only fetched history when `thread_ts` was set, so DM messages always started with an empty history:
+
+```python
+# Before — missed DMs entirely
+if thread_ts and thread_ts != event["ts"]:
+    thread_history = fetch_thread_history(...)
+# else: history stays empty
+```
+
+#### Solution Applied
+
+Detect DM channels by checking if `channel` starts with `"D"` (all Slack DM channel IDs begin with `D`). For DMs, call `conversations_history()` to fetch recent messages in the channel. For channel threads, keep the existing `conversations_replies()` approach:
+
+```python
+if channel.startswith("D"):
+    thread_history = fetch_dm_history(client, channel, bot_user_id, event["ts"])
+elif thread_ts and thread_ts != event["ts"]:
+    thread_history = fetch_thread_history(client, channel, thread_ts, bot_user_id, event["ts"])
+```
+
+`fetch_dm_history()` reverses the message list (history API returns newest-first), strips bot "thinking" messages (those starting with `⏳`), and maps `bot_id` presence to the `"assistant"` role.
+
+#### Lesson Learned
+
+> **Slack DMs have no `thread_ts` — use `conversations_history()`, not `conversations_replies()`.** Always branch on `channel.startswith("D")` before deciding how to fetch prior messages. Test conversation context in both DMs and channel threads separately.
+
+---
+
+### Issue #29: Claude Model Name Not in LangSmith Pricing Table — Cost Shows $0.00
+
+**Severity:** 🟡 MEDIUM — Cost observability gap
+
+#### What Happened
+
+Even after `ls_model_name` metadata was set on the `RunTree`, LangSmith displayed `$0.00` for `claude-opus-4-6` and `claude-haiku-4-5-20251001` runs. The "Cost per Trace" column stayed blank.
+
+#### Root Cause
+
+LangSmith's server-side pricing lookup uses a fixed internal table keyed on historical model IDs (e.g., `claude-3-opus-20240229`). The new Claude 4.x model naming scheme (`claude-opus-4-6`) is not yet in that table, so cost evaluates to zero regardless of token counts.
+
+#### Solution Applied
+
+Added a `_PRICING_MAP` in `utils/anthropic_wrapper.py` that maps current model IDs to the closest historical equivalent that LangSmith recognises:
+
+```python
+_PRICING_MAP = {
+    "claude-opus-4-6":           "claude-3-opus-20240229",
+    "claude-haiku-4-5-20251001": "claude-3-haiku-20240307",
+    "claude-sonnet-4-5-20250929": "claude-3-sonnet-20240229",
+}
+ls_model = _PRICING_MAP.get(response.model, response.model)
+rt.extra.setdefault("metadata", {}).update({
+    "ls_model_name": ls_model,
+    "ls_provider": "anthropic",
+    "actual_model": response.model,
+})
+```
+
+This gives approximate cost estimates in LangSmith. Precise costs still require the ChatAnthropic migration (Issue #27) for runs that go through LangChain.
+
+#### Lesson Learned
+
+> **LangSmith's pricing table lags new model releases.** When you see `$0.00` cost for a known-expensive model, check whether the model ID is in LangSmith's pricing table. Map new model IDs to the closest priced historical equivalent via `ls_model_name` metadata as a stopgap.
+
+---
+
+### Issue #30: ChatAnthropic Migration — Preserving Prompt Caching and Tool Use
+
+**Severity:** 🟡 MEDIUM — Integration complexity
+
+#### What Happened
+
+Migrating `process_with_claude()` from raw `AnthropicClientWrapper` to `ChatAnthropic` required careful adaptation of three Anthropic-specific features that have different representations in LangChain:
+
+1. **Prompt caching** (`cache_control` on system prompt)
+2. **Tool use** (response field is `response.tool_calls`, not `content[i].type == "tool_use"`)
+3. **Tool results** (must be `ToolMessage` objects, not raw dicts)
+
+#### Root Cause
+
+The raw Anthropic SDK and LangChain's `ChatAnthropic` share the same underlying API but expose different Python interfaces.
+
+#### Solution Applied
+
+```python
+# Prompt caching: SystemMessage with content list (LangChain supports this)
+system_msg = SystemMessage(content=[
+    {"type": "text", "text": _STATIC_SYSTEM, "cache_control": {"type": "ephemeral"}},
+    {"type": "text", "text": dynamic_context},
+])
+
+# Tool loop: use response.tool_calls (LangChain) not content block iteration
+llm_with_tools = llm.bind_tools(tools)
+response = llm_with_tools.invoke([system_msg] + messages)
+
+if not response.tool_calls:
+    break  # End turn
+
+for tool_call in response.tool_calls:
+    result = call_mcp_tool(tool_call["name"], dict(tool_call["args"]))
+    messages.append(ToolMessage(content=result, tool_call_id=tool_call["id"]))
+```
+
+The rolling summary (Haiku) was also migrated:
+```python
+# Before
+summary = haiku_client.messages.create(...)
+# After
+summary = haiku_llm.invoke([HumanMessage(content=compress_prompt)])
+```
+
+MCP tools in Anthropic format (`{"name", "description", "input_schema"}`) work directly with `bind_tools()` — no schema conversion needed.
+
+#### Lesson Learned
+
+> **LangChain's `ChatAnthropic` is a thin wrapper — Anthropic-specific features (caching, tool use, streaming) are all supported, just via different method names.** When migrating from raw SDK: `response.content[i].type` → `response.tool_calls`; tool results become `ToolMessage` objects; system prompts with cache_control become `SystemMessage(content=[...])` lists.
+
+---
+
+**Document Version:** 1.6
+**Last Updated:** 2026-02-22 (Updated with Issues #27-30: LangSmith tracing, DM context, model pricing map, ChatAnthropic migration)
 **Maintainer:** Compliance Engineering Team
 **Next Review:** After pre-commit hooks implementation
 
 **Change Log:**
+- v1.6 (2026-02-22): Added Issues #27-30 — LangSmith @traceable cost limitation, DM conversation context (thread_ts=None), LangSmith pricing table gaps, ChatAnthropic migration patterns
 - v1.5 (2026-02-18): Added Issues #18-26 — hardcoded credentials, insecure API key default, CORS wildcard, SQL injection, connection leaks, orchestrator method mismatch, token inefficiency, Slack markdown rendering, missing progress feedback
 - v1.4 (2026-02-12): Added Issue #17 - Python boolean syntax recurrence in tool #20 analyze_role_permissions; Added Architecture Decision: Agent Response with Attachments Pattern; Updated tool count: 11 → 20 MCP tools
 - v1.3 (2026-02-12): Added Issues #13-15 - NetSuite RESTlet page size limit (CRITICAL: 79.2% data loss), database constraint case mismatch, SOD analysis foreign key violation; Updated metrics: 20.8% → 99.7% user coverage

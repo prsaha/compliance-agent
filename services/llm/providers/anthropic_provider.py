@@ -8,6 +8,7 @@ import logging
 
 from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError, APITimeoutError
 import anthropic
+from langsmith import traceable
 
 from ..base import BaseLLMProvider, LLMMessage, LLMResponse, LLMConfig
 from ..base import LLMConnectionError, LLMAuthenticationError, LLMRateLimitError, LLMTimeoutError
@@ -56,6 +57,7 @@ class AnthropicProvider(BaseLLMProvider):
             max_retries=config.max_retries
         )
 
+    @traceable(run_type="llm", name="anthropic_provider.generate")
     def generate(
         self,
         messages: List[LLMMessage],
@@ -154,6 +156,7 @@ class AnthropicProvider(BaseLLMProvider):
                 raise LLMAuthenticationError(f"Authentication failed: {str(e)}")
             raise
 
+    @traceable(run_type="llm", name="anthropic_provider.stream")
     def generate_stream(
         self,
         messages: List[LLMMessage],

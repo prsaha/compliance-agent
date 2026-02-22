@@ -2003,33 +2003,70 @@ cryptography>=46.0.0                # Encryption (added)
 
 ---
 
-## Slack Bot Integration (Added Feb 2026)
+## Slack Bot Integration (Added Feb 2026, Updated Feb 2026)
 
 The Slack bot (`slack_bot_local.py`) provides a natural language interface to all 35 MCP tools via Socket Mode.
 
-### Architecture
+### Architecture (Post-ChatAnthropic Migration)
 
 ```
-User (Slack) → Socket Mode → slack_bolt App → process_with_claude()
-                                                    ↓
-                                            AnthropicClientWrapper
-                                            (claude-opus-4-6, max 5 turns)
-                                                    ↓
-                                            call_mcp_tool() → MCP Server (port 8080)
-                                                    ↓
-                                            format_as_blocks() → Slack Block Kit
+User (Slack) → Socket Mode → slack_bolt App → handle_mention()
+                                                    │
+                                    ┌───────────────┴───────────────┐
+                                    │                               │
+                              channel starts with "D"       channel thread
+                              fetch_dm_history()            fetch_thread_history()
+                              (conversations_history)       (conversations_replies)
+                                    │                               │
+                                    └───────────────┬───────────────┘
+                                                    │
+                          @traceable(name="slack_compliance_query", run_type="chain")
+                                      process_with_claude()
+                                                    │
+                                         ChatAnthropic(opus-4-6)
+                                         + TokenTrackingCallback
+                                         + bind_tools(35 MCP tools)
+                                         (prompt caching on system msg)
+                                                    │
+                                            Agentic loop (5 turns)
+                                             response.tool_calls
+                                                    │
+                                         call_mcp_tool() → MCP Server (port 8080)
+                                         ToolMessage → messages list
+                                                    │
+                                         Rolling summary: ChatAnthropic(haiku-4-5)
+                                         when tool result > 2000 chars
+                                                    │
+                                         format_as_blocks() → Slack Block Kit
 ```
 
 ### Key Features
 
 | Feature | Implementation |
 |---------|---------------|
-| Multi-turn reasoning | 5-turn loop with tool call accumulation |
+| Multi-turn reasoning | 5-turn loop via `response.tool_calls` (LangChain) |
 | @mention resolution | `extract_user_mentions()` → Slack `users_info` API → email |
+| DM conversation context | `fetch_dm_history()` via `conversations_history()` for `"D"` channels |
+| Thread conversation context | `fetch_thread_history()` via `conversations_replies()` |
 | Animated thinking | `_animate_thinking()` background thread, 2.5s stage cycling |
 | Block Kit output | `format_as_blocks()` splits on `---` → section + divider blocks |
 | Token optimization | Intent routing, prefix caching, output sanitization, history trimming |
-| Token tracking | `AnthropicClientWrapper(agent_name="slack_bot")` |
+| Token tracking | `TokenTrackingCallback(agent_name="slack_bot")` bridges LangChain → `TokenTracker` |
+| LangSmith tracing | `@traceable` parent span + ChatAnthropic child spans; full cost/token visibility |
+
+### LangSmith Observability
+
+Every Slack query produces one `slack_compliance_query` trace in LangSmith with:
+- Nested `ChatAnthropicMessages` child spans per LLM turn
+- `total_cost`, `prompt_tokens`, `completion_tokens` populated via LangChain callbacks
+- `ls_model_name` metadata for model pricing lookup (maps `claude-opus-4-6` → `claude-3-opus-20240229`)
+
+Required env vars:
+```bash
+LANGSMITH_API_KEY=lsv2_pt_...
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_PROJECT=compliance-agent
+```
 
 ### Security
 
@@ -2044,16 +2081,17 @@ User (Slack) → Socket Mode → slack_bolt App → process_with_claude()
 ---
 
 **Document Status**: ✅ Production — Up to Date
-**Last Updated**: 2026-02-18
+**Last Updated**: 2026-02-22
 **Approvers**: Prabal Saha
 
 ---
 
-**Document Version**: 2.0.0
-**Last Updated**: 2026-02-18
+**Document Version**: 2.1.0
+**Last Updated**: 2026-02-22
 **Author**: Prabal Saha + Claude (Sonnet 4.6)
 **Branch**: `RD-1036683-billing-schedule-automation-dev`
 
 **Change Log:**
+- v2.1.0 (2026-02-22): ChatAnthropic migration (raw SDK → LangChain), LangSmith full cost tracing, DM conversation context via fetch_dm_history(), TokenTrackingCallback, updated architecture diagram
 - v2.0.0 (2026-02-18): Updated to production status; resolved all open questions; added Slack Bot Integration section; added Security section; updated tool count 34→35; documented token optimization and Block Kit UI
 - v1.0.0 (2026-02-12): Initial design specification

@@ -21,6 +21,8 @@ import requests
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from dotenv import load_dotenv
+from langsmith import traceable
+from langsmith.run_helpers import get_current_run_tree
 
 # Configure logging
 logging.basicConfig(
@@ -214,7 +216,7 @@ def _trim_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return messages[-(MAX_HISTORY_TURNS * 2):]
 
 
-def _compress_tool_result(tool_name: str, content: str, client) -> str:
+def _compress_tool_result(tool_name: str, content: str, llm) -> str:
     """
     Rolling summary: use Haiku to compress a large tool result down to key facts
     before it is stored in the conversation history that Claude re-reads every turn.
@@ -226,25 +228,25 @@ def _compress_tool_result(tool_name: str, content: str, client) -> str:
         return content
 
     try:
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=200,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Compliance tool '{tool_name}' returned the following result. "
-                    f"Extract ONLY the key facts in ≤150 tokens: "
-                    f"emails, role names, violation counts, risk scores, conflict names, "
-                    f"approval status, and any action items.\n\n{content}"
-                )
-            }],
-            operation="rolling_summary"
+        from langchain_core.messages import HumanMessage as _HM
+        prompt = (
+            f"Compliance tool '{tool_name}' returned the following result. "
+            f"Extract ONLY the key facts in ≤150 tokens: "
+            f"emails, role names, violation counts, risk scores, conflict names, "
+            f"approval status, and any action items.\n\n{content}"
         )
-        summary = resp.content[0].text
+        resp = llm.invoke([_HM(content=prompt)])
+        if isinstance(resp.content, str):
+            summary = resp.content
+        else:
+            summary = "".join(
+                b.get("text", "") for b in resp.content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
         logger.info(
             f"Rolling summary: '{tool_name}' compressed {len(content)} → {len(summary)} chars"
         )
-        return summary
+        return summary if summary else content
     except Exception as e:
         logger.warning(f"Rolling summary failed for '{tool_name}': {e}")
         return content
@@ -298,23 +300,95 @@ def format_as_blocks(text: str) -> List[Dict[str, Any]]:
     return blocks or [{"type": "section", "text": {"type": "mrkdwn", "text": text[:3000]}}]
 
 
-def process_with_claude(user_message: str, user_email: str, mentioned_users: Optional[Dict[str, Dict]] = None) -> str:
+def fetch_dm_history(client, channel: str, bot_user_id: str, current_ts: str, limit: int = 10) -> list:
     """
-    Process user message with Claude and execute any tool calls
-
-    Args:
-        user_message: User's message text
-        user_email: User's email address
-
-    Returns:
-        Claude's response text
+    Fetch recent messages from a DM channel as conversation history.
+    Used when thread_ts is absent (DMs have no threads — every message is top-level).
     """
     try:
-        # Use tracking wrapper so all Slack bot calls appear in cost reports
-        from utils.anthropic_wrapper import AnthropicClientWrapper
+        result = client.conversations_history(channel=channel, limit=limit + 1)
+        # conversations_history returns newest-first; reverse for chronological order
+        messages = list(reversed(result.get("messages", [])))
+        history = []
+        for msg in messages:
+            if msg.get("ts") == current_ts:
+                continue
+            text = msg.get("text", "").strip()
+            if not text or text.startswith("⏳"):
+                continue
+            if msg.get("user") == bot_user_id or msg.get("bot_id"):
+                role = "assistant"
+            else:
+                role = "user"
+                text = re.sub(r"<@[A-Z0-9]+>", "", text).strip()
+            if text:
+                history.append({"role": role, "content": text})
+        logger.info(f"Fetched {len(history)} DM history messages")
+        return history
+    except Exception as e:
+        logger.warning(f"Could not fetch DM history: {e}")
+        return []
+
+
+def fetch_thread_history(client, channel: str, thread_ts: str, bot_user_id: str, current_ts: str) -> list:
+    """
+    Fetch prior messages from a Slack thread as alternating user/assistant history.
+    Caps at the 20 most recent messages to avoid token explosion.
+    """
+    try:
+        result = client.conversations_replies(channel=channel, ts=thread_ts, limit=20)
+        history = []
+        for msg in result.get("messages", []):
+            if msg["ts"] == current_ts:
+                continue
+            text = msg.get("text", "").strip()
+            if not text or text.startswith("⏳"):
+                continue
+            if msg.get("user") == bot_user_id or msg.get("bot_id"):
+                role = "assistant"
+            else:
+                role = "user"
+                text = re.sub(r"<@[A-Z0-9]+>", "", text).strip()
+            if text:
+                history.append({"role": role, "content": text})
+        logger.info(f"Fetched {len(history)} messages of thread history")
+        return history
+    except Exception as e:
+        logger.warning(f"Could not fetch thread history: {e}")
+        return []
+
+
+@traceable(name="slack_compliance_query", run_type="chain")
+def process_with_claude(user_message: str, user_email: str, mentioned_users: Optional[Dict[str, Dict]] = None,
+                        thread_history: Optional[list] = None) -> str:
+    """
+    Process user message with Claude and execute any tool calls.
+    Uses ChatAnthropic so LangChain's callback system populates LangSmith
+    prompt_tokens / completion_tokens / total_cost automatically.
+    """
+    try:
+        from langchain_anthropic import ChatAnthropic
+        from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+        from utils.langchain_callback import TokenTrackingCallback
         from utils.tool_router import select_tools_for_intent
 
-        client = AnthropicClientWrapper(agent_name="slack_bot", api_key=ANTHROPIC_API_KEY)
+        token_cb = TokenTrackingCallback(agent_name="slack_bot")
+
+        # Main model — Opus for reasoning + tool use
+        llm = ChatAnthropic(
+            model="claude-opus-4-6",
+            max_tokens=MAX_TOKENS_SLACK,
+            anthropic_api_key=ANTHROPIC_API_KEY,
+            callbacks=[token_cb],
+        )
+
+        # Haiku for rolling summaries (cheap compression)
+        haiku = ChatAnthropic(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            anthropic_api_key=ANTHROPIC_API_KEY,
+            callbacks=[token_cb],
+        )
 
         # ── Static system content (cache-eligible — identical across all users/turns) ──
         _STATIC_SYSTEM = (
@@ -342,7 +416,7 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
             "• Emojis are fine and encouraged for visual hierarchy"
         )
 
-        # ── Dynamic context appended per-call (not cached — contains user-specific data) ──
+        # ── Dynamic context (not cached — contains per-user data) ──
         dynamic_parts = [f"Current user: {user_email}"]
         if mentioned_users:
             dynamic_parts.append("Mentioned users:")
@@ -353,107 +427,67 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
             )
         dynamic_context = "\n".join(dynamic_parts)
 
-        # System passed as a list to enable cache_control on the static portion
-        system = [
-            {
-                "type": "text",
-                "text": _STATIC_SYSTEM,
-                "cache_control": {"type": "ephemeral"}   # Prefix cache — re-read at 10% cost
-            },
-            {
-                "type": "text",
-                "text": dynamic_context
-            }
-        ]
+        # SystemMessage with cache_control on the static portion
+        system_msg = SystemMessage(content=[
+            {"type": "text", "text": _STATIC_SYSTEM, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": dynamic_context},
+        ])
 
         # Select only the tools relevant to this message (saves ~8K tokens per request)
         relevant_tools = select_tools_for_intent(user_message, MCP_TOOLS) if MCP_TOOLS else []
+        tools = relevant_tools if relevant_tools else MCP_TOOLS
+        llm_with_tools = llm.bind_tools(tools)
 
-        # Multi-turn agentic tool use loop
-        messages = [{
-            "role": "user",
-            "content": user_message
-        }]
+        # Build message list: thread history (if any) + current user message
+        messages: List = []
+        for h in (thread_history or []):
+            if h["role"] == "user":
+                messages.append(HumanMessage(content=h["content"]))
+            elif h["role"] == "assistant":
+                messages.append(AIMessage(content=h["content"]))
+        messages.append(HumanMessage(content=user_message))
 
         final_text = ""
         max_turns = 5  # Prevent infinite loops
 
         for turn in range(max_turns):
-            # Trim history to avoid unbounded context growth
-            trimmed_messages = _trim_history(messages)
+            trimmed = _trim_history(messages)
+            response = llm_with_tools.invoke([system_msg] + trimmed)
 
-            # Call Claude with token-efficient settings
-            response = client.messages.create(
-                model="claude-opus-4-6",
-                max_tokens=MAX_TOKENS_SLACK,
-                system=system,
-                messages=trimmed_messages,
-                tools=relevant_tools if relevant_tools else MCP_TOOLS,
-                operation=f"slack_turn_{turn + 1}"
-            )
-
-            # Check stop reason
-            if response.stop_reason == "end_turn":
-                # Extract final text
-                for block in response.content:
-                    if block.type == "text":
-                        final_text += block.text
+            # No tool calls → extract final text and stop
+            if not response.tool_calls:
+                if isinstance(response.content, str):
+                    final_text = response.content
+                else:
+                    for block in response.content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            final_text += block.get("text", "")
                 break
 
-            # Process tool calls
-            tool_uses = []
-            tool_results = []
+            # Append AIMessage with tool_calls to history
+            messages.append(response)
 
-            for content_block in response.content:
-                if content_block.type == "text":
-                    final_text += content_block.text
-                elif content_block.type == "tool_use":
-                    tool_uses.append(content_block)
+            # Execute each tool call and append ToolMessage results
+            for tool_call in response.tool_calls:
+                tool_name = tool_call["name"]
+                tool_input = dict(tool_call["args"])
+                tool_use_id = tool_call["id"]
 
-                    # Execute tool call
-                    tool_name = content_block.name
-                    tool_input = content_block.input
-                    tool_use_id = content_block.id
+                logger.info(f"Turn {turn+1}: Executing tool: {tool_name} with input: {tool_input}")
 
-                    logger.info(f"Turn {turn+1}: Executing tool: {tool_name} with input: {tool_input}")
+                # Inject user email where required by specific tools
+                if "my_email" in str(MCP_TOOLS) and tool_name in ["initialize_session", "check_my_approval_authority"]:
+                    if "my_email" not in tool_input:
+                        tool_input["my_email"] = user_email
+                if "requester_email" in str(MCP_TOOLS) and tool_name == "request_exception_approval":
+                    if "requester_email" not in tool_input:
+                        tool_input["requester_email"] = user_email
 
-                    # Inject user email if needed
-                    if "my_email" in str(MCP_TOOLS) and tool_name in ["initialize_session", "check_my_approval_authority"]:
-                        if "my_email" not in tool_input:
-                            tool_input["my_email"] = user_email
+                raw_result = call_mcp_tool(tool_name, tool_input)
+                result = _sanitize_tool_output(tool_name, raw_result)
+                result = _compress_tool_result(tool_name, result, haiku)
 
-                    if "requester_email" in str(MCP_TOOLS) and tool_name == "request_exception_approval":
-                        if "requester_email" not in tool_input:
-                            tool_input["requester_email"] = user_email
-
-                    # Call MCP tool and sanitize output to control token growth
-                    raw_tool_result = call_mcp_tool(tool_name, tool_input)
-                    tool_result = _sanitize_tool_output(tool_name, raw_tool_result)
-
-                    # Rolling summary: intelligently compress with Haiku before
-                    # storing in history (avoids re-reading large blobs every turn)
-                    tool_result = _compress_tool_result(tool_name, tool_result, client)
-
-                    # Add to results
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": tool_result
-                    })
-
-            # If no tool calls, we're done
-            if not tool_uses:
-                break
-
-            # Continue conversation with tool results
-            messages.append({
-                "role": "assistant",
-                "content": response.content
-            })
-            messages.append({
-                "role": "user",
-                "content": tool_results
-            })
+                messages.append(ToolMessage(content=result, tool_call_id=tool_use_id))
 
         return final_text.strip() if final_text else "I processed your request, but have nothing to report."
 
@@ -479,6 +513,18 @@ def handle_mention(event, say, client):
         # Extract mentioned users
         mentioned_users = extract_user_mentions(message_text, client)
 
+        # Fetch conversation history so Claude has full context
+        thread_ts = event.get("thread_ts")
+        thread_history = []
+        if channel.startswith("D"):
+            # DM channel: no threads — fetch recent channel history
+            thread_history = fetch_dm_history(client, channel, bot_user_id, event["ts"])
+        elif thread_ts and thread_ts != event["ts"]:
+            # Public/private channel thread reply
+            thread_history = fetch_thread_history(
+                client, channel, thread_ts, bot_user_id, event["ts"]
+            )
+
         logger.info(f"Processing message from {user_email}: {message_text_clean}")
         if mentioned_users:
             logger.info(f"Mentioned users: {list(mentioned_users.values())}")
@@ -501,7 +547,7 @@ def handle_mention(event, say, client):
         anim_thread.start()
 
         try:
-            response = process_with_claude(message_text_clean, user_email, mentioned_users)
+            response = process_with_claude(message_text_clean, user_email, mentioned_users, thread_history)
         finally:
             stop_event.set()
             anim_thread.join(timeout=3)
