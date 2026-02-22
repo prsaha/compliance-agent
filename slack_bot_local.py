@@ -531,6 +531,9 @@ def handle_mention(event, say, client):
 
         # Post initial thinking message and animate it while Claude processes
         channel = event["channel"]
+        # LangSmith Threads: stable ID groups all turns of a conversation
+        _ts = thread_ts or event["ts"]
+        thread_id = channel if channel.startswith("D") else f"{channel}-{_ts}"
         thinking_result = client.chat_postMessage(
             channel=channel,
             thread_ts=event["ts"],
@@ -547,7 +550,10 @@ def handle_mention(event, say, client):
         anim_thread.start()
 
         try:
-            response = process_with_claude(message_text_clean, user_email, mentioned_users, thread_history)
+            response = process_with_claude(
+                message_text_clean, user_email, mentioned_users, thread_history,
+                langsmith_extra={"metadata": {"thread_id": thread_id, "conversation_id": thread_id}}
+            )
         finally:
             stop_event.set()
             anim_thread.join(timeout=3)
@@ -607,8 +613,12 @@ def handle_dm(event, say, client):
         )
         anim_thread.start()
 
+        thread_id = channel  # DM channel ID is stable per user-pair
         try:
-            response = process_with_claude(message_text, user_email, mentioned_users)
+            response = process_with_claude(
+                message_text, user_email, mentioned_users,
+                langsmith_extra={"metadata": {"thread_id": thread_id, "conversation_id": thread_id}}
+            )
         finally:
             stop_event.set()
             anim_thread.join(timeout=3)
@@ -664,7 +674,11 @@ def handle_compliance_command(ack, command, say, client):
             logger.info(f"Mentioned users: {list(mentioned_users.values())}")
 
         # Process with Claude
-        response = process_with_claude(command_text, user_email, mentioned_users)
+        thread_id = f"{command.get('channel_id', 'cmd')}-slash"
+        response = process_with_claude(
+            command_text, user_email, mentioned_users,
+            langsmith_extra={"metadata": {"thread_id": thread_id, "conversation_id": thread_id}}
+        )
 
         # Send response using Block Kit for proper Slack rendering
         say(text=response, blocks=format_as_blocks(response))
