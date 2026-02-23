@@ -82,6 +82,31 @@ LANGCHAIN_PROJECT=compliance-agent
 
 ---
 
+### ⚡ Latest Enhancement: Haiku/Opus Model Split + LangSmith Evaluators (Feb 2026)
+
+**Haiku for tool dispatch, Opus for synthesis** (`slack_bot_local.py:461`):
+
+```python
+has_tool_results = any(isinstance(m, ToolMessage) for m in messages)
+active_model = llm_with_tools if has_tool_results else haiku_with_tools
+```
+
+Tool-dispatch turns (decide which MCP tool to call) use `claude-haiku-4-5-20251001` — fast and cheap.
+Once tool results arrive, the synthesis turn switches to `claude-opus-4-6` for high-quality reasoning.
+
+**Verified trace `c06830c0`:** `haiku → call_mcp_tool → haiku → call_mcp_tool → haiku → opus` | 14.3s | 2 tools
+
+**3 online LangSmith evaluators** fire on every trace:
+- `mcp_tool_called` — scores 0 if Claude answered without calling any MCP tool
+- `mcp_tool_coverage` — scores 0 if access-request query skipped `analyze_access_request`
+- `hallucination_heuristic` — scores 0 if response contains `<tool_call>` XML or ungrounded numeric claims
+
+All evaluators use 3-layer detection: tool child spans → XML hallucination → text grounding markers.
+
+**See:** `docs/LESSONS_LEARNED.md` Issues #31-33 for root causes and solutions.
+
+---
+
 ## 🏗️ Architecture
 
 ### Three-Phase System
@@ -755,6 +780,8 @@ A: Create new connector in `connectors/`, implement `BaseConnector` interface, r
 - [x] **NEW**: Slack bot with multi-turn agentic reasoning (Feb 2026)
 - [x] **NEW**: LangSmith distributed tracing — cost, tokens, latency per query (Feb 2026)
 - [x] **NEW**: DM conversation context — bot maintains history across messages (Feb 2026)
+- [x] **NEW**: Haiku/Opus model split — Haiku dispatches tools, Opus synthesizes answers (Feb 2026)
+- [x] **NEW**: 3 online LangSmith evaluators — hallucination, tool enforcement, coverage (Feb 2026)
 
 ### 🚧 Known Issues
 

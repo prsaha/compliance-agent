@@ -5590,12 +5590,76 @@ the agent failed to execute tools (regardless of whether the MCP server is up).
 
 ---
 
-**Document Version:** 1.7
-**Last Updated:** 2026-02-22 (Updated with Issues #31-32: LangSmith evaluator S3 limitation, direct call tool-binding bypass)
+---
+
+### Issue #33: Haiku for Tool Dispatch, Opus for Synthesis
+
+**Severity:** ✅ RESOLVED — performance improvement, no data-correctness impact
+
+#### What Happened
+
+All agentic turns in `process_with_claude()` were using Claude Opus 4.6 regardless of
+what the turn was doing. Tool-dispatch turns (where Claude reads the user message and
+decides which MCP tools to call) don't require Opus-level reasoning — they are primarily
+a structured routing decision. Using Opus for these turns added unnecessary cost and
+latency.
+
+#### Root Cause
+
+The initial implementation used a single `llm_with_tools = llm.bind_tools(tools)` for
+all turns. There was no distinction between:
+- **Tool-dispatch turns**: decide which tools to call → structured output, low complexity
+- **Synthesis turns**: read tool results and compose final answer → high reasoning quality needed
+
+#### Solution Applied
+
+Two model handles are now created at the start of `process_with_claude()`:
+
+```python
+haiku_with_tools = haiku.bind_tools(tools)   # model="claude-haiku-4-5-20251001"
+llm_with_tools   = llm.bind_tools(tools)     # model="claude-opus-4-6"
+```
+
+The active model is selected each turn based on whether `ToolMessage` results are already
+in the conversation history:
+
+```python
+has_tool_results = any(isinstance(m, ToolMessage) for m in messages)
+active_model = llm_with_tools if has_tool_results else haiku_with_tools
+```
+
+- **No tool results yet** → Haiku dispatches the tools (fast, cheap)
+- **Tool results present** → Opus synthesizes the final answer (quality matters here)
+
+#### Verified Trace (2026-02-23)
+
+Trace `c06830c0` ("what can you do?"):
+```
+[haiku]  ChatAnthropic  → dispatches call_mcp_tool
+[tool ]  call_mcp_tool  → fetches user profile
+[haiku]  ChatAnthropic  → dispatches second call_mcp_tool
+[tool ]  call_mcp_tool  → fetches capabilities
+[haiku]  ChatAnthropic  → rolling compression
+[opus ]  ChatAnthropic  → final synthesis (ToolMessages in history)
+```
+Models: `['haiku', 'haiku', 'haiku', 'opus']` | Tool calls: 2 | Latency: 14.3s | Status: success
+
+#### Lesson Learned
+
+> **Split tool-dispatch from synthesis at the model level.** Haiku is fast and cheap for
+> structured routing decisions (which tool to call, with what arguments). Opus is reserved
+> for the final synthesis turn where complex multi-source reasoning produces the answer.
+> The `has_tool_results` flag is a reliable signal for which phase the agent is in.
+
+---
+
+**Document Version:** 1.8
+**Last Updated:** 2026-02-23 (Added Issue #33: Haiku/Opus model split for tool dispatch vs synthesis)
 **Maintainer:** Compliance Engineering Team
 **Next Review:** After pre-commit hooks implementation
 
 **Change Log:**
+- v1.8 (2026-02-23): Added Issue #33 — Haiku for tool dispatch, Opus for synthesis; verified trace c06830c0
 - v1.7 (2026-02-22): Added Issues #31-32 — LangSmith evaluator executor cannot access S3-stored LLM outputs; direct process_with_claude() calls bypass tool binding
 - v1.6 (2026-02-22): Added Issues #27-30 — LangSmith @traceable cost limitation, DM conversation context (thread_ts=None), LangSmith pricing table gaps, ChatAnthropic migration patterns
 - v1.5 (2026-02-18): Added Issues #18-26 — hardcoded credentials, insecure API key default, CORS wildcard, SQL injection, connection leaks, orchestrator method mismatch, token inefficiency, Slack markdown rendering, missing progress feedback

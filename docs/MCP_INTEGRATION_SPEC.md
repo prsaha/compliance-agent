@@ -2152,13 +2152,19 @@ Each invocation creates a child span with:
 
 This is the primary signal all 3 evaluators rely on for the post-v1.3 traces.
 
-### Verified Scores (2026-02-22)
+### Verified Scores (2026-02-23)
 
 | Trace | mcp_tool_called | mcp_tool_coverage | hallucination |
 |---|---|---|---|
 | "can you report violations" (real Slack) | ✅ 1 | N/A | ✅ 1 |
 | "tell me about my permissions" (real Slack) | ✅ 1 | N/A | ✅ 1 |
+| "what can you do?" (haiku+opus, c06830c0) | ✅ 1 | N/A | ✅ 1 |
 | "assign Controller role" (XML hallucination) | ❌ 0 | ❌ 0 | ❌ 0 |
+
+**Model split verified** (trace `c06830c0`, 2026-02-23):
+- Tool-dispatch turns: `claude-haiku-4-5-20251001` (turns 1–3)
+- Synthesis turn: `claude-opus-4-6` (turn 4, after ToolMessages in history)
+- 2 real `call_mcp_tool` spans | latency: 14.3s | status: success
 
 ---
 
@@ -2168,12 +2174,13 @@ This is the primary signal all 3 evaluators rely on for the post-v1.3 traces.
 
 ---
 
-**Document Version**: 2.2.0
-**Last Updated**: 2026-02-22
+**Document Version**: 2.3.0
+**Last Updated**: 2026-02-23
 **Author**: Prabal Saha + Claude (Sonnet 4.6)
 **Branch**: `RD-1036683-billing-schedule-automation-dev`
 
 **Change Log:**
+- v2.3.0 (2026-02-23): Verified Haiku/Opus model split; updated verified scores table with trace c06830c0
 - v2.2.0 (2026-02-22): Added LangSmith Evaluator Integration section — evaluator specs, S3 constraint, call_mcp_tool @traceable, verified score table
 - v2.1.0 (2026-02-22): ChatAnthropic migration (raw SDK → LangChain), LangSmith full cost tracing, DM conversation context via fetch_dm_history(), TokenTrackingCallback, updated architecture diagram
 - v2.0.0 (2026-02-18): Updated to production status; resolved all open questions; added Slack Bot Integration section; added Security section; updated tool count 34→35; documented token optimization and Block Kit UI

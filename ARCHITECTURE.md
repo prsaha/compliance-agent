@@ -2212,14 +2212,25 @@ Every Slack query is now fully traced in LangSmith with cost, token counts, and 
 
 ### Trace Structure
 
+Verified trace `c06830c0` (2026-02-23) — "what can you do?", 14.3s, 2 MCP calls:
+
 ```
 slack_compliance_query  [chain]          ← @traceable on process_with_claude()
-├── ChatAnthropic        [llm]           ← turn 1 LLM call (tool selection)
+├── ChatAnthropic        [llm/haiku]     ← tool-dispatch turn: decide which tools to call
 ├── call_mcp_tool        [tool]          ← @traceable(run_type="tool") — MCP execution
-├── call_mcp_tool        [tool]          ← parallel MCP calls if requested
-├── ChatAnthropic        [llm]           ← turn 2 LLM call (synthesis)
-└── ...                                 ← up to 5 turns
+├── ChatAnthropic        [llm/haiku]     ← tool-dispatch turn 2 (follow-up tool calls)
+├── call_mcp_tool        [tool]          ← second MCP call
+├── ChatAnthropic        [llm/haiku]     ← rolling context compression (no tool output)
+└── ChatAnthropic        [llm/opus]      ← synthesis turn: ToolMessages in history → Opus
 ```
+
+**Model selection logic** (`slack_bot_local.py:461`):
+```python
+has_tool_results = any(isinstance(m, ToolMessage) for m in messages)
+active_model = llm_with_tools if has_tool_results else haiku_with_tools
+```
+- Haiku handles all tool-dispatch turns (fast, cheap, structured routing)
+- Opus handles the synthesis turn once tool results are in context (quality matters)
 
 **Key design decision:** `call_mcp_tool()` is decorated with `@traceable(run_type="tool")`
 (not `run_type="chain"`). This makes the tool execution visible as a `tool`-type child span,
@@ -2256,7 +2267,8 @@ See `docs/LESSONS_LEARNED.md` Issues #31-32 for the root cause of the S3 limitat
 - V5.0 (2026-02-16): Added Slack bot, multi-turn agentic reasoning, 35 MCP tools
 - V6.0 (2026-02-18): Security hardening, token optimization, Slack Block Kit UI, exception management
 - V7.0 (2026-02-22): LangSmith full observability — Threads grouping, @traceable on call_mcp_tool(), 3 online evaluators with 3-layer detection logic
+- V8.0 (2026-02-23): Haiku/Opus model split — Haiku for tool-dispatch turns, Opus for synthesis; verified trace c06830c0
 
 ---
 
-**Document Status**: ✅ **COMPLETE AND UP-TO-DATE** (V7.0 — 2026-02-22)
+**Document Status**: ✅ **COMPLETE AND UP-TO-DATE** (V8.0 — 2026-02-23)
