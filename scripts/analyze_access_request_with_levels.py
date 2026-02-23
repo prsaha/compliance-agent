@@ -600,6 +600,11 @@ def main():
         print("ANALYSIS COMPLETE")
         print(f"{'=' * 80}")
         print(f"\n✅ Results saved to: {output_path}")
+
+        if 'error' in result:
+            print(f"\n❌ Analysis Error: {result['error']}")
+            sys.exit(1)
+
         print(f"\nOverall Recommendation: {result['overall_recommendation']}")
         print(f"Overall Risk: {result['overall_risk']}")
         print(f"Conflicts Found: {result['conflicts_found']}")
