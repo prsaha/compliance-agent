@@ -3,7 +3,8 @@ name: employee-onboarding
 description: NetSuite role assignment approval routing triggered by Jira tickets. Use when a Jira ticket is created containing keywords like "Assign role", "Fivetran-", or a NetSuite role name paired with a user email. Reads ticket metadata, resolves the requester's NetSuite authority, runs an SOD compliance check on the requested role, and routes to the correct approver (Manager, Controller, or CFO) based on requester permissions and violation severity. Does NOT orchestrate Okta/Workday/Celigo provisioning — that is a separate automated flow.
 metadata:
   author: Prabal Saha
-  version: 2.0.0
+  version: 2.1.0
+  compatibility: "Claude Code, Claude.ai — requires compliance MCP server at localhost:8080"
   mcp-server: compliance-system
 ---
 
@@ -30,6 +31,21 @@ This skill applies five design patterns:
 
 Consult `references/approval-chain.md` for the full authority matrix.
 Consult `references/role-matrix.md` for role definitions and risk tiers.
+
+---
+
+## Critical
+
+CRITICAL: Self-approval is never permitted. If the requester and target user are the same
+person, immediately escalate to the requester's manager regardless of authority level.
+Add comment to Jira: "Self-approval not permitted per SOX policy."
+
+CRITICAL: Financial roles (AP, GL, Controller, Journal Entry) always require minimum
+Controller (L4) approval — even if the requester already holds L4+ authority, always
+add Controller as reviewer for the audit trail.
+
+CRITICAL: Always pass `include_existing_roles: true` to `analyze_access_request`.
+Never analyze a requested role in isolation from the user's existing roles.
 
 ---
 
@@ -210,6 +226,15 @@ Timestamp: {ISO datetime}
 
 5. **Trigger incremental sync** to ensure compliance DB reflects the new role:
    - Call `trigger_manual_sync(sync_type="incremental")`
+
+---
+
+## Performance Notes
+
+- Parse the Jira ticket completely before calling any MCP tools
+- Run all 6 steps in order — do not skip the post-approval SOD re-verification
+- Quality of routing decisions is more important than speed; wrong routing = audit finding
+- If any field is ambiguous, comment on the Jira ticket and wait — never guess
 
 ---
 
