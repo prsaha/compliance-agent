@@ -15,9 +15,11 @@ import sys
 import logging
 import threading
 import itertools
+import hashlib
 from typing import Dict, Any, Optional, List
 import json
 import requests
+import redis as redis_lib
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from dotenv import load_dotenv
@@ -51,6 +53,54 @@ ROLLING_SUMMARY_MIN_CHARS = int(os.environ.get("SLACK_ROLLING_SUMMARY_MIN_CHARS"
 
 # Global variable to store MCP tools (fetched at startup)
 MCP_TOOLS: List[Dict[str, Any]] = []
+
+# ---------------------------------------------------------------------------
+# Phase A — Redis TTL Cache for MCP tool calls
+# Feature flag: set USE_MCP_CACHE=false in .env to disable
+# ---------------------------------------------------------------------------
+USE_MCP_CACHE = os.getenv("USE_MCP_CACHE", "true").lower() == "true"
+
+_redis_client = None
+
+def _get_redis():
+    """Lazy Redis client — returns None if Redis is unavailable."""
+    global _redis_client
+    if _redis_client is None:
+        try:
+            _redis_client = redis_lib.from_url(
+                os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+                decode_responses=True,
+                socket_connect_timeout=1,
+            )
+            _redis_client.ping()
+        except Exception as e:
+            logger.warning(f"Redis unavailable — MCP cache disabled: {e}")
+            _redis_client = None
+    return _redis_client
+
+# TTL in seconds per read-only tool
+_MCP_CACHE_TTL = {
+    "get_user_violations":      3600,   # 1 hour
+    "get_violation_stats":      1800,   # 30 min
+    "get_role_conflicts":       86400,  # 24 hours
+    "analyze_access_request":   3600,   # 1 hour
+    "initialize_session":       300,    # 5 min
+    "list_systems":             3600,
+    "list_all_users":           1800,
+    "get_compliance_report":    1800,
+    "search_permissions":       3600,
+    "check_my_approval_authority": 3600,
+    "validate_job_role":        3600,
+}
+
+# Tools that mutate state — never cached
+_MUTATING_TOOLS = {
+    "trigger_manual_sync",
+    "approve_exception",
+    "request_exception_approval",
+    "remediate_violation",
+    "update_exception_status",
+}
 
 
 def fetch_mcp_tools():
@@ -117,6 +167,33 @@ def call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
     Returns:
         Tool result as string
     """
+    # -----------------------------------------------------------------------
+    # Phase A — Redis cache read (before HTTP call)
+    # -----------------------------------------------------------------------
+    ttl = _MCP_CACHE_TTL.get(tool_name) if USE_MCP_CACHE else None
+    cache_key: Optional[str] = None
+    if ttl and tool_name not in _MUTATING_TOOLS:
+        cache_key = (
+            f"mcp:{tool_name}:"
+            f"{hashlib.md5(json.dumps(arguments, sort_keys=True).encode()).hexdigest()}"
+        )
+        try:
+            r = _get_redis()
+            if r:
+                cached = r.get(cache_key)
+                if cached:
+                    logger.info(f"Cache HIT: {tool_name}")
+                    try:
+                        run = get_current_run_tree()
+                        if run:
+                            run.metadata["context_cache_hit"] = True
+                            run.metadata["cache_tool"] = tool_name
+                    except Exception:
+                        pass
+                    return cached
+        except Exception as e:
+            logger.warning(f"Redis read failed for {tool_name}: {e}")
+
     try:
         # Build JSON-RPC 2.0 request
         mcp_request = {
@@ -145,12 +222,28 @@ def call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
             if "result" in result:
                 content = result["result"].get("content", [])
                 if content and len(content) > 0:
-                    return content[0].get("text", str(result))
-                return str(result.get("result"))
+                    tool_result = content[0].get("text", str(result))
+                else:
+                    tool_result = str(result.get("result"))
             elif "error" in result:
                 logger.error(f"MCP tool error: {result['error']}")
                 return f"❌ Error calling {tool_name}: {result['error'].get('message', 'Unknown error')}"
-            return str(result)
+            else:
+                tool_result = str(result)
+
+            # -------------------------------------------------------------------
+            # Phase A — Redis cache write (after successful HTTP call)
+            # -------------------------------------------------------------------
+            if cache_key and ttl and tool_result and not tool_result.startswith("❌"):
+                try:
+                    r = _get_redis()
+                    if r:
+                        r.setex(cache_key, ttl, tool_result)
+                        logger.info(f"Cache SET: {tool_name} (TTL={ttl}s)")
+                except Exception as e:
+                    logger.warning(f"Redis write failed for {tool_name}: {e}")
+
+            return tool_result
         else:
             logger.error(f"MCP tool call failed: {response.status_code} - {response.text}")
             return f"❌ Error calling {tool_name}: HTTP {response.status_code}"
@@ -526,7 +619,7 @@ def handle_home_tab(event, client, logger):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": "I monitor *Segregation of Duties (SOD)* across NetSuite. Ask me anything about user access, role conflicts, violations, or approvals."
+                        "text": "I perform *compliance reviews across critical business systems* — ask me anything about access controls, role conflicts, violations, or approvals.\n\n*Capabilities include:*\n• Segregation of Duties (SOD) conflict analysis\n• Access control reviews across critical systems such as NetSuite\n• This agent is designed to extend to any critical system"
                     }
                 },
                 {"type": "divider"},
@@ -565,19 +658,19 @@ def handle_home_tab(event, client, logger):
                     "fields": [
                         {
                             "type": "mrkdwn",
-                            "text": "*Monitors*\nNetSuite (1,928 users)"
+                            "text": "*Connected systems*\nNetSuite · extensible to any"
                         },
                         {
                             "type": "mrkdwn",
-                            "text": "*SOD Rules*\n18 active"
+                            "text": "*Compliance rules*\n18 SOD rules active"
                         },
                         {
                             "type": "mrkdwn",
-                            "text": "*Data refresh*\nEvery hour"
+                            "text": "*Users monitored*\n1,928 across NetSuite"
                         },
                         {
                             "type": "mrkdwn",
-                            "text": "*Full sync*\nDaily at 2 AM"
+                            "text": "*Data refresh*\nHourly · full sync at 2 AM"
                         }
                     ]
                 },
@@ -587,7 +680,7 @@ def handle_home_tab(event, client, logger):
                     "elements": [
                         {
                             "type": "mrkdwn",
-                            "text": "Powered by Claude Opus 4.6 + MCP · SOX compliance monitoring · Questions? Ask me directly"
+                            "text": "Powered by Claude Opus 4.6 + MCP · Cross-system compliance monitoring · Extensible to any critical system · Questions? Ask me directly"
                         }
                     ]
                 }
@@ -700,8 +793,12 @@ def handle_dm(event, say, client):
         if mentioned_users:
             logger.info(f"Mentioned users: {list(mentioned_users.values())}")
 
-        # Post initial thinking message and animate it while Claude processes
+        # Fetch prior DM history so Claude has multi-turn context
         channel = event["channel"]
+        bot_user_id = client.auth_test()["user_id"]
+        thread_history = fetch_dm_history(client, channel, bot_user_id, event["ts"])
+
+        # Post initial thinking message and animate it while Claude processes
         thinking_result = client.chat_postMessage(
             channel=channel,
             text="⏳ _Analyzing your request..._"
@@ -719,7 +816,7 @@ def handle_dm(event, say, client):
         thread_id = channel  # DM channel ID is stable per user-pair
         try:
             response = process_with_claude(
-                message_text, user_email, mentioned_users,
+                message_text, user_email, mentioned_users, thread_history,
                 langsmith_extra={"metadata": {"thread_id": thread_id, "conversation_id": thread_id}}
             )
         finally:
