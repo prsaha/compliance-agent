@@ -504,6 +504,101 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
         return f"❌ Error processing your request: {str(e)}"
 
 
+@app.event("app_home_opened")
+def handle_home_tab(event, client, logger):
+    """Publish a static info page to the App Home tab"""
+    logger.info(f"app_home_opened fired for user: {event.get('user')}")
+    try:
+        client.views_publish(
+            user_id=event["user"],
+        view={
+            "type": "home",
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "🤖  Compliance Agent — Fivetran",
+                        "emoji": True
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "I monitor *Segregation of Duties (SOD)* across NetSuite. Ask me anything about user access, role conflicts, violations, or approvals."
+                    }
+                },
+                {"type": "divider"},
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*💬  How to use me*\n\nMessage me directly or *@mention* me in any channel. I understand natural language — no commands needed."
+                    }
+                },
+                {"type": "divider"},
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*📋  What you can ask*"
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "• `Show me all CRITICAL violations`\n• `Can we assign AP-Approver to @austin?`\n• `What roles does sarah.chen@fivetran.com have?`\n• `Run an access review for the Finance team`\n• `Is there an SOD conflict between GL and AP roles?`\n• `What exceptions are currently approved?`"
+                    }
+                },
+                {"type": "divider"},
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*⚙️  System*"
+                    }
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {
+                            "type": "mrkdwn",
+                            "text": "*Monitors*\nNetSuite (1,928 users)"
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": "*SOD Rules*\n18 active"
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": "*Data refresh*\nEvery hour"
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": "*Full sync*\nDaily at 2 AM"
+                        }
+                    ]
+                },
+                {"type": "divider"},
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": "Powered by Claude Opus 4.6 + MCP · SOX compliance monitoring · Questions? Ask me directly"
+                        }
+                    ]
+                }
+            ]
+        }
+        )
+        logger.info(f"Home tab published successfully for user: {event.get('user')}")
+    except Exception as e:
+        logger.error(f"Failed to publish home tab: {e}")
+
+
 @app.event("app_mention")
 def handle_mention(event, say, client):
     """Handle @mention of the bot"""
