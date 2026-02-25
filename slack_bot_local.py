@@ -102,6 +102,10 @@ _MUTATING_TOOLS = {
     "update_exception_status",
 }
 
+# Thread-local flag so cache hits inside call_mcp_tool() can be reported
+# on the root slack_compliance_query LangSmith run (not just the child span)
+_cache_hit_tls = threading.local()
+
 # ---------------------------------------------------------------------------
 # Phase B — Conversation Summarization
 # Feature flag: set USE_CONV_SUMMARIES=false in .env to disable
@@ -304,13 +308,8 @@ def call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
                 cached = r.get(cache_key)
                 if cached:
                     logger.info(f"Cache HIT: {tool_name}")
-                    try:
-                        run = get_current_run_tree()
-                        if run:
-                            run.metadata["context_cache_hit"] = True
-                            run.metadata["cache_tool"] = tool_name
-                    except Exception:
-                        pass
+                    _cache_hit_tls.hit = True
+                    _cache_hit_tls.tool = tool_name
                     return cached
         except Exception as e:
             logger.warning(f"Redis read failed for {tool_name}: {e}")
@@ -747,6 +746,20 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
                 result = _compress_tool_result(tool_name, result, haiku)
 
                 messages.append(ToolMessage(content=result, tool_call_id=tool_use_id))
+
+        # Tag root LangSmith run — must happen here (not inside call_mcp_tool)
+        # because get_current_run_tree() inside a child @traceable span returns
+        # the child span, not the root slack_compliance_query run.
+        try:
+            root_run = get_current_run_tree()
+            if root_run:
+                cache_hit = getattr(_cache_hit_tls, "hit", False)
+                root_run.metadata["context_cache_hit"] = cache_hit
+                if cache_hit:
+                    root_run.metadata["cache_tool"] = getattr(_cache_hit_tls, "tool", "")
+                _cache_hit_tls.hit = False  # reset for next call
+        except Exception:
+            pass
 
         return final_text.strip() if final_text else "I processed your request, but have nothing to report."
 
