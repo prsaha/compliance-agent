@@ -205,6 +205,37 @@ class NetSuiteConnector(BaseConnector):
 
                 # Sync roles — upsert current roles, then remove stale ones
                 roles = user_data.get('roles', [])
+                paginated_returned_roles = bool(roles)  # Track before fallback
+
+                # Fallback: if paginated RESTlet returned 0 roles but user has DB roles,
+                # verify via search endpoint before wiping.
+                # The paginated RESTlet is a finance-role focused saved search — it only
+                # returns role data for ~45/1934 users (finance/accounting roles).
+                # For all other users (including Admin role holders), roles=[] from paginated
+                # is NOT authoritative — must verify via search.
+                existing_role_ids_pre = {str(ur.role_id) for ur in user.user_roles}
+                if not roles and existing_role_ids_pre:
+                    logger.warning(
+                        f"Paginated RESTlet returned 0 roles for {email} "
+                        f"(has {len(existing_role_ids_pre)} in DB) — verifying via search"
+                    )
+                    search_result = self.search_user_sync(
+                        search_value=email,
+                        search_type='email',
+                        include_permissions=True
+                    )
+                    if search_result and search_result.get('roles'):
+                        roles = search_result['roles']
+                        paginated_returned_roles = True  # Search is authoritative too
+                        logger.info(
+                            f"Search fallback found {len(roles)} role(s) for {email}: "
+                            f"{[r.get('role_name') for r in roles]}"
+                        )
+                    else:
+                        logger.warning(
+                            f"Search also returned 0 roles for {email} — proceeding with removal"
+                        )
+
                 current_role_ids: set = set()
 
                 for role_data in roles:
@@ -231,14 +262,19 @@ class NetSuiteConnector(BaseConnector):
                     )
                     current_role_ids.add(str(role.id))
 
-                # Remove roles that are no longer assigned in NetSuite
-                existing_role_ids = {str(ur.role_id) for ur in user.user_roles}
-                stale_role_ids = existing_role_ids - current_role_ids
-                for stale_id in stale_role_ids:
-                    user_repo.remove_role_from_user(str(user.id), stale_id)
-                    logger.info(
-                        f"Removed stale role {stale_id} from {user_data.get('email', user.id)}"
-                    )
+                # Remove roles that are no longer assigned in NetSuite.
+                # Only do this when we have authoritative role data (paginated returned roles,
+                # or search fallback confirmed the current set). If neither source returned
+                # role data for this user, skip removal to avoid false positives — the
+                # paginated RESTlet only covers finance/accounting roles, not all roles.
+                if paginated_returned_roles:
+                    existing_role_ids = {str(ur.role_id) for ur in user.user_roles}
+                    stale_role_ids = existing_role_ids - current_role_ids
+                    for stale_id in stale_role_ids:
+                        user_repo.remove_role_from_user(str(user.id), stale_id)
+                        logger.info(
+                            f"Removed stale role {stale_id} from {user_data.get('email', user.id)}"
+                        )
 
                 synced_users.append(user)
 
