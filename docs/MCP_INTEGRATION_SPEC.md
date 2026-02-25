@@ -2078,6 +2078,18 @@ LANGCHAIN_PROJECT=compliance-agent
 | SQL parameters | Parameterized queries (`%s`) for all dynamic values |
 | DB connections | All `psycopg2.connect()` wrapped in `try/finally conn.close()` |
 
+### Memory Management (Phase A + B)
+
+| Phase | Status | Commit |
+|-------|--------|--------|
+| Phase A — Redis MCP Cache | ✅ Live | `71d6113` + `2134a00` |
+| Phase B — Conversation Summarization | ✅ Live | `3d1a1b3` |
+| Phase C — Semantic Catalogue | ⏳ Pending | — |
+
+**Phase A** caches MCP tool responses in Redis (TTL 5min–24h by tool). Cache is busted on `trigger_manual_sync`. LangSmith tags: `context_cache_hit`.
+
+**Phase B** generates Haiku summaries of each DM exchange, stored in `conversation_summaries` table (90-day TTL). Injects 3 most recent summaries as prior context (~150 tokens vs ~2K raw). LangSmith tags: `context_summaries_injected`.
+
 ---
 
 ---
@@ -2174,12 +2186,13 @@ This is the primary signal all 3 evaluators rely on for the post-v1.3 traces.
 
 ---
 
-**Document Version**: 2.3.0
-**Last Updated**: 2026-02-23
+**Document Version**: 2.4.0
+**Last Updated**: 2026-02-25
 **Author**: Prabal Saha + Claude (Sonnet 4.6)
 **Branch**: `RD-1036683-billing-schedule-automation-dev`
 
 **Change Log:**
+- v2.4.0 (2026-02-25): Phase A Redis MCP cache (cache bust on sync), Phase B conversation summarization, paginated RESTlet blind spot fix, stale role removal fix
 - v2.3.0 (2026-02-23): Verified Haiku/Opus model split; updated verified scores table with trace c06830c0
 - v2.2.0 (2026-02-22): Added LangSmith Evaluator Integration section — evaluator specs, S3 constraint, call_mcp_tool @traceable, verified score table
 - v2.1.0 (2026-02-22): ChatAnthropic migration (raw SDK → LangChain), LangSmith full cost tracing, DM conversation context via fetch_dm_history(), TokenTrackingCallback, updated architecture diagram

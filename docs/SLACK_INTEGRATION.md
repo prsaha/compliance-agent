@@ -1,8 +1,8 @@
 # Slack Bot Integration Guide
 
 **Project**: SOD Compliance System - Slack Integration
-**Date**: 2026-02-13
-**Version**: 1.0
+**Date**: 2026-02-25
+**Version**: 2.0
 
 ---
 
@@ -134,6 +134,68 @@ LANGCHAIN_PROJECT=compliance-agent
 4. **Cost & Tokens**: `total_cost`, `prompt_tokens`, `completion_tokens` populated automatically
 
 **Known limitation**: `claude-opus-4-6` is not in LangSmith's pricing table. Cost is approximated by mapping to `claude-3-opus-20240229` via `ls_model_name` metadata in `utils/anthropic_wrapper.py`.
+
+---
+
+## 🧠 Memory Management — Phase A + B (Feb 2026)
+
+### Phase A: Redis TTL Cache
+
+MCP tool calls are now cached in Redis to eliminate redundant round-trips.
+
+- **Cache key:** `mcp:{tool_name}:{md5(arguments)}`
+- **TTL map:** `get_user_violations=1h`, `get_role_conflicts=24h`, `get_violation_stats=30min`
+- **Mutating tools excluded:** `trigger_manual_sync`, `approve_exception`, `request_exception_approval`
+- **Cache bust:** `trigger_manual_sync` deletes all `mcp:*` keys on success (except SOD rule/system caches)
+- **Feature flag:** `USE_MCP_CACHE=true` in `.env`
+- **LangSmith:** cache hits tagged `metadata.context_cache_hit=true`
+- **Verified:** 0.01s cache hit vs ~50ms live call in LangSmith waterfall
+
+### Phase B: Conversation Summarization
+
+After each DM exchange, Haiku generates a 2–3 sentence summary stored in Postgres. On the next query from the same user, the 3 most recent summaries are injected as prior context in the system message.
+
+**Why this matters:**
+- Raw prior conversation history: ~2,000 tokens
+- Haiku summary: ~150 tokens
+- Result: 93% token reduction on follow-up queries, with cross-session memory
+
+**New DB table:** `conversation_summaries`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `user_email` | TEXT | Slack user's email |
+| `channel_id` | TEXT | Slack channel |
+| `summary` | TEXT | Haiku-generated 2–3 sentence summary |
+| `topics` | TEXT[] | Extracted entities (emails, roles, outcomes) |
+| `outcome` | TEXT | APPROVED / DENIED / ESCALATED / INFO |
+| `created_at` | TIMESTAMPTZ | Write time |
+| `expires_at` | TIMESTAMPTZ | created_at + 90 days |
+
+**Write-back** (non-blocking `threading.Thread` after each response):
+```python
+def _write_conversation_summary(user_email, channel_id, exchange, final_answer):
+    prompt = f"Summarise this compliance conversation in 3 sentences..."
+    summary_text = haiku.invoke(prompt).content
+    # Insert into conversation_summaries via repository
+```
+
+**Retrieval + injection** (before `process_with_claude()`):
+```python
+prior = summary_repo.get_recent(user_email, limit=3)
+if prior:
+    context_prefix = [{"role": "system",
+                        "content": "## Prior context\n" + "\n".join(s.summary for s in prior)}]
+    thread_history = context_prefix + (thread_history or [])
+```
+
+**Feature flag:** `USE_CONV_SUMMARIES=true` in `.env`
+
+**LangSmith:** `metadata.context_summaries_injected = N` (count of summaries injected)
+
+**Migration:** `database/migrations/006_add_conversation_summaries.sql`
+
+**Commits:** `3d1a1b3` (Phase B implementation), `71d6113` (Phase A + DM thread_history fix)
 
 ---
 
@@ -1106,6 +1168,11 @@ Your existing MCP server serves:
 **Total Setup Time:** ~1 hour
 
 **Your MCP server is ready for Slack integration with zero architecture changes!** 🎉
+
+---
+
+**Change Log:**
+- v2.0 (2026-02-25): Added Phase A Redis MCP cache and Phase B conversation summarization; DM thread_history fix
 
 ---
 

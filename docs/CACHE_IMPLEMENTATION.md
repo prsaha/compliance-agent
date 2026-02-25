@@ -1,7 +1,7 @@
 # Redis Cache Implementation - Complete Guide
 
-**Version**: 3.2.0
-**Date**: 2026-02-12
+**Version**: 3.3.0
+**Date**: 2026-02-25
 **Status**: ✅ Production Ready
 
 ---
@@ -613,6 +613,87 @@ The Redis caching layer provides:
 2. Run the demo: `python3 demos/demo_cache_service.py`
 3. Monitor cache hit rates and tune TTLs
 4. Set up alerts for cache failures
+
+---
+
+## Phase A: MCP Tool Call Cache (Slack Bot) — Feb 2026
+
+A second Redis cache layer was added directly in `slack_bot_local.py` to eliminate redundant MCP tool calls within a Slack session. This is separate from the existing AI analysis cache in `services/cache_service.py`.
+
+### Problem Solved
+
+Every Slack query caused identical MCP tool calls even when the underlying data hadn't changed. For example, asking about the same user twice in one hour would call `get_user_violations` twice — identical result, paid for twice.
+
+### Cache Design
+
+**Cache key format:**
+```
+mcp:{tool_name}:{md5(json.dumps(arguments, sort_keys=True))}
+```
+
+**TTL map (per tool):**
+| Tool | TTL | Reason |
+|------|-----|--------|
+| `get_user_violations` | 1 hour | Roles change infrequently |
+| `get_violation_stats` | 30 min | Stats can shift with new syncs |
+| `get_role_conflicts` | 24 hours | SOD rules don't change daily |
+| `analyze_access_request` | 1 hour | Role assignments stable within session |
+| `initialize_session` | 5 min | Session context |
+| `list_systems` | 1 hour | System list is static |
+| `list_all_users` | 30 min | User list changes slowly |
+| `get_compliance_report` | 30 min | Report data refreshes with sync |
+| `search_permissions` | 1 hour | Permission definitions are static |
+| `check_my_approval_authority` | 1 hour | Authority tiers rarely change |
+| `validate_job_role` | 1 hour | Role definitions are static |
+
+**Mutating tools — never cached, never read from cache:**
+- `trigger_manual_sync`
+- `approve_exception`
+- `request_exception_approval`
+- `remediate_violation`
+- `update_exception_status`
+
+### Cache Bust on Sync
+
+When `trigger_manual_sync` completes successfully, all `mcp:*` cache keys are deleted except for role/system definition caches that don't change with a sync:
+
+```python
+_SYNC_SAFE_PREFIXES = ("mcp:get_role_conflicts:", "mcp:list_systems:")
+bust_keys = [k for k in r.keys("mcp:*")
+             if not any(k.startswith(p) for p in _SYNC_SAFE_PREFIXES)]
+r.delete(*bust_keys)
+```
+
+This ensures that triggering a sync immediately reflects fresh data on the next query.
+
+### LangSmith Integration
+
+Cache hits are tagged in LangSmith traces:
+```python
+run.metadata["context_cache_hit"] = True
+run.metadata["cache_tool"] = tool_name
+```
+
+Filter LangSmith by `metadata.context_cache_hit = true` to measure cache hit rate and compare cost vs cache-miss traces.
+
+### Feature Flag
+
+```bash
+USE_MCP_CACHE=true   # Set to false to disable (default: true)
+REDIS_URL=redis://localhost:6379/0
+```
+
+### Verified Performance
+
+- Cache HIT: ~0.01s response time
+- Cache MISS: ~50ms (MCP HTTP round-trip)
+- Confirmed via LangSmith trace: `call_mcp_tool` child span shows 0.00s on cache hits
+
+### Implementation Location
+
+`compliance-agent/slack_bot_local.py` — `_get_redis()`, `_MCP_CACHE_TTL`, `_MUTATING_TOOLS`, and the cache read/write block inside `call_mcp_tool()`.
+
+**Commit:** `2134a00` (cache bust), `71d6113` (initial Phase A implementation)
 
 ---
 

@@ -5651,20 +5651,166 @@ Models: `['haiku', 'haiku', 'haiku', 'opus']` | Tool calls: 2 | Latency: 14.3s |
 > for the final synthesis turn where complex multi-source reasoning produces the answer.
 > The `has_tool_results` flag is a reliable signal for which phase the agent is in.
 
+
 ---
 
-**Document Version:** 1.8
-**Last Updated:** 2026-02-23 (Added Issue #33: Haiku/Opus model split for tool dispatch vs synthesis)
+### Issue #34: Redis Cache Not Busted After Manual Sync
+
+**Severity:** ✅ RESOLVED — data freshness bug
+
+#### What Happened
+
+After `trigger_manual_sync` completed successfully and updated NetSuite role data in the database, the Slack bot continued returning stale results for up to 1 hour. Users would trigger a sync, confirm it completed, then query the bot and still see the old data (e.g., a role they had just removed from a user still appearing in violation reports).
+
+#### Root Cause
+
+`trigger_manual_sync` was correctly added to `_MUTATING_TOOLS` (excluded from being cached), but there was no code to **delete the existing cached entries** after the sync completed. The Phase A Redis cache had TTLs of 1h for `get_user_violations`, 30min for `get_violation_stats`, and 24h for `get_role_conflicts`. These stale entries survived the sync and were served until they naturally expired.
+
+#### Solution Applied
+
+After a successful `trigger_manual_sync` call in `call_mcp_tool()`, all `mcp:*` cache keys are deleted except for role-definition caches that don't change with sync:
+
+```python
+if tool_name == "trigger_manual_sync" and not tool_result.startswith("❌"):
+    _SYNC_SAFE_PREFIXES = ("mcp:get_role_conflicts:", "mcp:list_systems:")
+    r = _get_redis()
+    if r:
+        all_keys = r.keys("mcp:*")
+        bust_keys = [k for k in all_keys
+                     if not any(k.startswith(p) for p in _SYNC_SAFE_PREFIXES)]
+        if bust_keys:
+            r.delete(*bust_keys)
+```
+
+#### Lesson Learned
+
+> **Mutating operations must invalidate downstream caches.** Excluding a tool from being *written* to cache is not enough — you also need to *delete* existing cached entries that the mutation made stale. Think of it as write-through invalidation: sync → bust all user/violation caches → next read is fresh.
+
+---
+
+### Issue #35: NetSuite Sync Was Additive-Only — Stale Roles Never Removed
+
+**Severity:** ✅ RESOLVED — data integrity bug
+
+#### What Happened
+
+When a role was removed from a user in NetSuite, the compliance database continued to show the user as having that role indefinitely. Violation reports reflected the old role set, causing false positives. For example, removing the "NetSuite 360" role from a user in the NetSuite UI had no effect on compliance reports — the bot continued reporting that role as active.
+
+#### Root Cause
+
+The sync loop in `netsuite_connector.py` called `assign_role_to_user()` for every role returned by the RESTlet, but never called `remove_role_from_user()`. The sync was purely additive: it could only add roles, never subtract them.
+
+#### Solution Applied
+
+After upserting all roles returned for a user, the connector now diffs the current DB role set against what was just synced and removes the difference:
+
+```python
+current_role_ids: set = set()
+# ... upsert loop adds to current_role_ids ...
+
+existing_role_ids = {str(ur.role_id) for ur in user.user_roles}
+stale_role_ids = existing_role_ids - current_role_ids
+for stale_id in stale_role_ids:
+    user_repo.remove_role_from_user(str(user.id), stale_id)
+```
+
+#### Lesson Learned
+
+> **Sync operations must be set-reconciling, not additive.** An "upsert all new items" pattern silently accumulates deleted items forever. Always diff the current source set against the stored set and remove the delta. This is especially critical for compliance/audit systems where stale access grants are a control failure.
+
+---
+
+### Issue #36: Paginated RESTlet Only Returns Finance Roles — 1,889/1,934 Users Get 0 Roles
+
+**Severity:** ✅ RESOLVED — architectural blind spot, data integrity bug
+
+#### What Happened
+
+After implementing stale role removal (Issue #35), the sync began wiping valid roles from ~97% of users. In one confirmed case, a user with the Administrator role had it removed from the compliance database on every sync, causing the bot to report "0 roles" for that user even though the role was clearly visible in the NetSuite UI.
+
+#### Root Cause
+
+The paginated RESTlet (`get_users_and_roles`) is a **finance-role focused saved search** — it only returns role data for users with accounting/AP/GL roles (roughly 45 of 1,934 active users). For all other users — including those holding Administrator, Celigo Integration Admin, or IT roles — the RESTlet returns `roles=[]`.
+
+The stale role removal logic treated this empty list as authoritative ("NetSuite says no roles → remove all DB roles") when in reality the RESTlet simply doesn't cover those users.
+
+Verification:
+```
+Page 7 (offset 1200), include_permissions=True:
+  With roles: 9/200 users   (all finance roles)
+  With 0 roles: 191/200 users
+```
+
+The `search_users` RESTlet (a separate script) correctly returns all roles for all users but only accepts single-user queries.
+
+#### Solution Applied
+
+Two-part guard in `netsuite_connector.py`:
+
+1. **Search fallback**: When the paginated RESTlet returns 0 roles for a user who has roles in the DB, call `search_users` to verify before removing:
+
+```python
+if not roles and existing_role_ids_pre:
+    search_result = self.search_user_sync(email, search_type='email', include_permissions=True)
+    if search_result and search_result.get('roles'):
+        roles = search_result['roles']
+        paginated_returned_roles = True
+```
+
+2. **Conditional removal**: Only remove stale roles when we have authoritative role data (paginated returned >0, or search fallback confirmed the set). If both return 0, skip removal:
+
+```python
+if paginated_returned_roles:
+    stale_role_ids = existing_role_ids - current_role_ids
+    for stale_id in stale_role_ids:
+        user_repo.remove_role_from_user(str(user.id), stale_id)
+```
+
+#### Lesson Learned
+
+> **Know what your data source covers before treating empty results as authoritative.** The paginated RESTlet returning `roles=[]` does not mean the user has no roles — it means the RESTlet's saved search scope doesn't include them. Always validate the completeness of a data source before using empty results as a signal to delete. For compliance systems, a false deletion is worse than a false retention.
+
+---
+
+### Issue #37: NetSuite RESTlet Propagation Delay Causes Temporary Data Mismatch
+
+**Severity:** ℹ️ KNOWN LIMITATION — architectural constraint, no code fix possible
+
+#### What Happened
+
+After saving a role change in the NetSuite UI (confirmed by the green "Record Saved" banner), triggering `trigger_manual_sync` and querying the compliance bot immediately returned the *old* role set. The bot continued reporting the removed role for several minutes after the UI confirmed it was gone.
+
+#### Root Cause
+
+The NetSuite sandbox environment has a propagation delay between when a record is saved in the UI and when the RESTlet API reflects that change. The RESTlet serves data from NetSuite's internal search indexes, which are updated asynchronously. This delay can range from seconds to several minutes in the sandbox, and is generally shorter in production.
+
+Additionally, three layers of caching between the UI change and the bot response compound the delay:
+```
+NetSuite UI save
+  → NetSuite RESTlet API lag (seconds–minutes)
+  → Compliance DB sync (hourly by default, or manual)
+  → Redis MCP cache (1h TTL, busted by trigger_manual_sync)
+  → Phase B conversation summaries (mention old roles in text, 90-day TTL)
+```
+
+#### Solution Applied
+
+No code fix is possible for the RESTlet propagation delay itself. Mitigations:
+- `trigger_manual_sync` now busts the Redis cache (Issue #34) so only the RESTlet lag remains
+- Recommend waiting 2–5 minutes after a NetSuite UI change before triggering sync in the sandbox
+- Phase B summary prompts should describe *decisions made*, not current role state, to avoid role names aging in summaries
+
+#### Lesson Learned
+
+> **Account for all caching layers between the source of truth and the user-facing response.** Even after fixing application-level caches, external system propagation delays can cause temporary inconsistencies. Design for eventual consistency: document the lag, instrument it (log sync timestamps in responses), and set user expectations.
+
+---
+
+**Document Version:** 1.9
+**Last Updated:** 2026-02-25 (Added Issues #34-37: Redis cache bust, additive sync bug, paginated RESTlet blind spot, NetSuite propagation delay)
 **Maintainer:** Compliance Engineering Team
-**Next Review:** After pre-commit hooks implementation
+**Next Review:** After Phase C semantic catalogue implementation
 
 **Change Log:**
+- v1.9 (2026-02-25): Added Issues #34-37 — Redis cache bust on sync, additive-only sync bug, paginated RESTlet role coverage gap, NetSuite propagation delay
 - v1.8 (2026-02-23): Added Issue #33 — Haiku for tool dispatch, Opus for synthesis; verified trace c06830c0
-- v1.7 (2026-02-22): Added Issues #31-32 — LangSmith evaluator executor cannot access S3-stored LLM outputs; direct process_with_claude() calls bypass tool binding
-- v1.6 (2026-02-22): Added Issues #27-30 — LangSmith @traceable cost limitation, DM conversation context (thread_ts=None), LangSmith pricing table gaps, ChatAnthropic migration patterns
-- v1.5 (2026-02-18): Added Issues #18-26 — hardcoded credentials, insecure API key default, CORS wildcard, SQL injection, connection leaks, orchestrator method mismatch, token inefficiency, Slack markdown rendering, missing progress feedback
-- v1.4 (2026-02-12): Added Issue #17 - Python boolean syntax recurrence in tool #20 analyze_role_permissions; Added Architecture Decision: Agent Response with Attachments Pattern; Updated tool count: 11 → 20 MCP tools
-- v1.3 (2026-02-12): Added Issues #13-15 - NetSuite RESTlet page size limit (CRITICAL: 79.2% data loss), database constraint case mismatch, SOD analysis foreign key violation; Updated metrics: 20.8% → 99.7% user coverage
-- v1.2 (2026-02-12): Added Issues #10-12 - Python boolean syntax, dictionary vs object access, LLM message format; Added list_all_users MCP tool implementation
-- v1.1 (2026-02-12): Added Issue #9 - Non-Existent Repository Method Call (Critical post-deployment bug)
-- v1.0 (2026-02-12): Initial document with Issues #1-8
