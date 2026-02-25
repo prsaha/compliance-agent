@@ -203,8 +203,10 @@ class NetSuiteConnector(BaseConnector):
                 }
                 user = user_repo.upsert_user(user_dict)
 
-                # Sync roles
+                # Sync roles — upsert current roles, then remove stale ones
                 roles = user_data.get('roles', [])
+                current_role_ids: set = set()
+
                 for role_data in roles:
                     role_name = role_data.get('role_name')
                     role_id_str = str(role_data.get('role_id', role_name))
@@ -226,6 +228,16 @@ class NetSuiteConnector(BaseConnector):
                     user_repo.assign_role_to_user(
                         user_id=str(user.id),
                         role_id=str(role.id)
+                    )
+                    current_role_ids.add(str(role.id))
+
+                # Remove roles that are no longer assigned in NetSuite
+                existing_role_ids = {str(ur.role_id) for ur in user.user_roles}
+                stale_role_ids = existing_role_ids - current_role_ids
+                for stale_id in stale_role_ids:
+                    user_repo.remove_role_from_user(str(user.id), stale_id)
+                    logger.info(
+                        f"Removed stale role {stale_id} from {user_data.get('email', user.id)}"
                     )
 
                 synced_users.append(user)
