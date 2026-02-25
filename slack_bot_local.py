@@ -364,6 +364,28 @@ def call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
                 except Exception as e:
                     logger.warning(f"Redis write failed for {tool_name}: {e}")
 
+            # -------------------------------------------------------------------
+            # Phase A — Cache bust after sync (user/role data is now stale)
+            # Preserve static keys: SOD rules and system list don't change on sync
+            # -------------------------------------------------------------------
+            if tool_name == "trigger_manual_sync" and not tool_result.startswith("❌"):
+                _SYNC_SAFE_PREFIXES = ("mcp:get_role_conflicts:", "mcp:list_systems:")
+                try:
+                    r = _get_redis()
+                    if r:
+                        all_keys = r.keys("mcp:*")
+                        bust_keys = [
+                            k for k in all_keys
+                            if not any(k.startswith(p) for p in _SYNC_SAFE_PREFIXES)
+                        ]
+                        if bust_keys:
+                            r.delete(*bust_keys)
+                            logger.info(
+                                f"Cache BUST: {len(bust_keys)} keys cleared after trigger_manual_sync"
+                            )
+                except Exception as e:
+                    logger.warning(f"Cache bust failed after trigger_manual_sync: {e}")
+
             return tool_result
         else:
             logger.error(f"MCP tool call failed: {response.status_code} - {response.text}")
