@@ -82,6 +82,44 @@ LANGCHAIN_PROJECT=compliance-agent
 
 ---
 
+### 🧠 Latest Enhancement: Memory Management — Phase A + B (Feb 2026)
+
+**Phase A — Redis TTL Cache** (`slack_bot_local.py`, deployed 2026-02-24):
+
+MCP tool calls are now cached in Redis to eliminate redundant calls within a TTL window.
+
+- Cache key: `mcp:{tool_name}:{md5(arguments)}`
+- TTL map: `get_user_violations=1h`, `get_role_conflicts=24h`, `get_violation_stats=30min`, `analyze_access_request=1h`
+- Mutating tools excluded: `trigger_manual_sync`, `approve_exception`, `request_exception_approval`
+- Feature flag: `USE_MCP_CACHE=false` in `.env` to disable
+- LangSmith: cache hits tagged with `metadata.context_cache_hit=true` and `metadata.cache_tool`
+- Verified: Cache HIT at 0.01s vs MISS at ~50ms in logs
+
+**Phase A bugfix also included:** `handle_dm()` was calling `process_with_claude()` without `thread_history`. Fixed to call `fetch_dm_history()` first. Token impact: 3,485 → 5,494 per follow-up query (expected — prior context now injected).
+
+**Phase B — Conversation Summarization** (`slack_bot_local.py` + `models/conversation_summary.py`, deployed 2026-02-24):
+
+After each DM exchange, Haiku generates a 2-3 sentence summary stored in Postgres. On the next query from the same user, the 3 most recent summaries are injected into the system message (~150 tokens vs ~2K raw tokens).
+
+- New table: `conversation_summaries` (user_email, channel_id, summary, topics, outcome, expires_at 90d)
+- Write-back: non-blocking `threading.Thread` after each response
+- Retrieval: 3 most recent non-expired summaries per user
+- Feature flag: `USE_CONV_SUMMARIES=false` in `.env` to disable
+- LangSmith: injected summary count tagged as `metadata.context_summaries_injected`
+- Token reduction: ~2,000 raw prior tokens → ~150 summary tokens per follow-up query
+
+**Required env vars:**
+```bash
+USE_MCP_CACHE=true          # Phase A (default: true)
+USE_CONV_SUMMARIES=true     # Phase B (default: true)
+REDIS_URL=redis://localhost:6379/0
+DATABASE_URL=postgresql://...  # already required
+```
+
+**See:** `database/migrations/006_add_conversation_summaries.sql` for schema.
+
+---
+
 ### ⚡ Latest Enhancement: Haiku/Opus Model Split + LangSmith Evaluators (Feb 2026)
 
 **Haiku for tool dispatch, Opus for synthesis** (`slack_bot_local.py:461`):
@@ -782,6 +820,9 @@ A: Create new connector in `connectors/`, implement `BaseConnector` interface, r
 - [x] **NEW**: DM conversation context — bot maintains history across messages (Feb 2026)
 - [x] **NEW**: Haiku/Opus model split — Haiku dispatches tools, Opus synthesizes answers (Feb 2026)
 - [x] **NEW**: 3 online LangSmith evaluators — hallucination, tool enforcement, coverage (Feb 2026)
+- [x] **NEW**: Phase A Redis TTL cache — MCP tool call deduplication within TTL window (Feb 2026)
+- [x] **NEW**: Phase B conversation summarization — Haiku summaries stored in Postgres, injected as prior context (Feb 2026)
+- [x] **NEW**: DM thread_history fix — handle_dm() now correctly passes prior conversation to Claude (Feb 2026)
 
 ### 🚧 Known Issues
 
