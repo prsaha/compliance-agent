@@ -102,6 +102,127 @@ _MUTATING_TOOLS = {
     "update_exception_status",
 }
 
+# ---------------------------------------------------------------------------
+# Phase B — Conversation Summarization
+# Feature flag: set USE_CONV_SUMMARIES=false in .env to disable
+# ---------------------------------------------------------------------------
+USE_CONV_SUMMARIES = os.getenv("USE_CONV_SUMMARIES", "true").lower() == "true"
+
+_db_session_factory = None
+
+
+def _get_db_session():
+    """Lazy SQLAlchemy session — returns None if DB is unavailable."""
+    global _db_session_factory
+    if _db_session_factory is None:
+        try:
+            from models.database_config import get_db_config
+            _db_session_factory = get_db_config().SessionLocal
+        except Exception as e:
+            logger.warning(f"DB unavailable — conversation summaries disabled: {e}")
+            _db_session_factory = False  # sentinel: stop retrying
+    if _db_session_factory is False:
+        return None
+    return _db_session_factory()
+
+
+def _get_prior_summaries(user_email: str, limit: int = 3) -> str:
+    """
+    Retrieve the N most recent non-expired conversation summaries for a user.
+
+    Returns a formatted string to inject into the system message, or '' if none.
+    Injects ~150 tokens instead of ~2K raw prior messages.
+    """
+    if not USE_CONV_SUMMARIES:
+        return ""
+    try:
+        session = _get_db_session()
+        if not session:
+            return ""
+        try:
+            from models.conversation_summary import ConversationSummary
+            from datetime import datetime as _dt
+            rows = (
+                session.query(ConversationSummary)
+                .filter(ConversationSummary.user_email == user_email)
+                .filter(
+                    (ConversationSummary.expires_at == None) |  # noqa: E711
+                    (ConversationSummary.expires_at > _dt.utcnow())
+                )
+                .order_by(ConversationSummary.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            if not rows:
+                return ""
+            summaries = [row.summary for row in reversed(rows)]
+            logger.info(f"Injecting {len(summaries)} prior summaries for {user_email}")
+            return (
+                "## Prior conversation context (auto-generated summaries)\n"
+                + "\n".join(f"- {s}" for s in summaries)
+            )
+        finally:
+            session.close()
+    except Exception as e:
+        logger.warning(f"Could not fetch summaries for {user_email}: {e}")
+        return ""
+
+
+def _write_conversation_summary(
+    user_email: str, channel_id: str, exchange: list, final_answer: str
+):
+    """
+    Generate a 2-3 sentence Haiku summary of the exchange and persist to Postgres.
+
+    Called in a non-blocking background thread after each DM response.
+    Uses Haiku (not Opus) — cheap and fast enough for summarization.
+    """
+    if not USE_CONV_SUMMARIES:
+        return
+    try:
+        from langchain_anthropic import ChatAnthropic
+        from datetime import datetime as _dt, timedelta
+        haiku_sum = ChatAnthropic(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            anthropic_api_key=ANTHROPIC_API_KEY,
+        )
+        history_text = "\n".join(
+            f"{m['role'].upper()}: {m['content'][:300]}"
+            for m in (exchange or [])[-6:]
+        )
+        prompt = (
+            "Summarise this compliance conversation in 2-3 sentences.\n"
+            "Extract: users/emails mentioned, roles discussed, decision made "
+            "(APPROVED/DENIED/ESCALATED/INFO — or omit if purely informational).\n"
+            "Be concise — aim for under 100 words.\n\n"
+            f"History:\n{history_text}\n\n"
+            f"Final answer: {final_answer[:500]}"
+        )
+        summary_text = haiku_sum.invoke(prompt).content.strip()
+
+        session = _get_db_session()
+        if not session:
+            return
+        try:
+            from models.conversation_summary import ConversationSummary
+            row = ConversationSummary(
+                user_email=user_email,
+                channel_id=channel_id,
+                summary=summary_text,
+                expires_at=_dt.utcnow() + timedelta(days=90),
+            )
+            session.add(row)
+            session.commit()
+            logger.info(f"Saved summary for {user_email}: {summary_text[:80]}...")
+        except Exception as e:
+            session.rollback()
+            logger.warning(f"Could not save conversation summary: {e}")
+        finally:
+            session.close()
+    except Exception as e:
+        logger.warning(f"Summary write-back failed: {e}")
+
 
 def fetch_mcp_tools():
     """
@@ -454,11 +575,16 @@ def fetch_thread_history(client, channel: str, thread_ts: str, bot_user_id: str,
 
 @traceable(name="slack_compliance_query", run_type="chain", tags=["slack", "compliance"])
 def process_with_claude(user_message: str, user_email: str, mentioned_users: Optional[Dict[str, Dict]] = None,
-                        thread_history: Optional[list] = None) -> str:
+                        thread_history: Optional[list] = None,
+                        prior_context: Optional[str] = None) -> str:
     """
     Process user message with Claude and execute any tool calls.
     Uses ChatAnthropic so LangChain's callback system populates LangSmith
     prompt_tokens / completion_tokens / total_cost automatically.
+
+    Args:
+        prior_context: Phase B — formatted string of prior conversation summaries
+                       injected into the system message (~150 tokens vs ~2K raw history)
     """
     try:
         from langchain_anthropic import ChatAnthropic
@@ -520,6 +646,16 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
                 "Use these emails with get_user_violations / analyze_access_request automatically."
             )
         dynamic_context = "\n".join(dynamic_parts)
+
+        # Phase B — inject prior conversation summaries into system message
+        if prior_context:
+            dynamic_context += f"\n\n{prior_context}"
+            try:
+                run = get_current_run_tree()
+                if run:
+                    run.metadata["context_summaries_injected"] = prior_context.count("\n- ")
+            except Exception:
+                pass
 
         # SystemMessage with cache_control on the static portion
         system_msg = SystemMessage(content=[
@@ -798,6 +934,9 @@ def handle_dm(event, say, client):
         bot_user_id = client.auth_test()["user_id"]
         thread_history = fetch_dm_history(client, channel, bot_user_id, event["ts"])
 
+        # Phase B — retrieve prior conversation summaries for this user
+        prior_context = _get_prior_summaries(user_email)
+
         # Post initial thinking message and animate it while Claude processes
         thinking_result = client.chat_postMessage(
             channel=channel,
@@ -817,11 +956,20 @@ def handle_dm(event, say, client):
         try:
             response = process_with_claude(
                 message_text, user_email, mentioned_users, thread_history,
+                prior_context=prior_context,
                 langsmith_extra={"metadata": {"thread_id": thread_id, "conversation_id": thread_id}}
             )
         finally:
             stop_event.set()
             anim_thread.join(timeout=3)
+
+        # Phase B — write conversation summary asynchronously (non-blocking)
+        exchange = (thread_history or []) + [{"role": "user", "content": message_text}]
+        threading.Thread(
+            target=_write_conversation_summary,
+            args=(user_email, channel, exchange, response),
+            daemon=True,
+        ).start()
 
         # Update the thinking message in-place with the real response
         client.chat_update(
