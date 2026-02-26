@@ -1,6 +1,6 @@
 # SOD Compliance Agent — Architecture & Trust Mechanisms
 
-**Version:** 1.0
+**Version:** 1.1
 **Last Updated:** 2026-02-26
 **Audience:** Engineering team presentation
 
@@ -75,9 +75,29 @@
 │  └──────────────┘     │   present in context)                      │    │       a tool result"
 │                       └────────────────────────────────────────────┘    │
 └──────────────────────────────┬───────────────────────────────────────────┘
-                               │  answer posted to Slack
-                               │  + non-blocking thread writes
-                               │    Haiku summary → Postgres
+                               │  answer + ✅❌🔧 buttons posted to Slack
+                               │  + non-blocking threads:
+                               │    Haiku summary   → Postgres (Phase B)
+                               │    Button click     → _save_feedback() (Phase feedback)
+                               ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  FEEDBACK LOOP  (on button click, non-blocking)                          │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  _save_feedback()                                                 │   │
+│  │                                                                   │   │
+│  │  1. Postgres → answer_feedback table                              │   │
+│  │     signal: POSITIVE(1.0) | NEGATIVE(0.0) | PARTIAL(0.5)         │   │
+│  │                                                                   │   │
+│  │  2. LangSmith → create_feedback(run_id, human_rating=score)       │   │
+│  │     Human score visible alongside 3 auto-evals in Feedback tab   │   │
+│  │                                                                   │   │
+│  │  3. On NEGATIVE → Redis cache bust                                │   │
+│  │     delete mcp:get_user_violations:*                              │   │
+│  │     Next query forces fresh live NetSuite call                    │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────┬───────────────────────────────────────────┘
+                               │
                                ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  OBSERVABILITY + ANTI-HALLUCINATION GUARDRAILS  (LangSmith, online)      │
@@ -115,11 +135,11 @@
 
 ---
 
-## Anti-Hallucination — 4 Layers
+## Anti-Hallucination — 5 Layers
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  ANTI-HALLUCINATION — 4 LAYERS SUMMARISED                               ║
+║  ANTI-HALLUCINATION — 5 LAYERS SUMMARISED                               ║
 ╠══════════════════════════════════════════════════════════════════════════╣
 ║  Layer      │  Mechanism                          │  Where               ║
 ║─────────────┼─────────────────────────────────────┼─────────────────────║
@@ -136,6 +156,11 @@
 ║─────────────┼─────────────────────────────────────┼─────────────────────║
 ║  Eval       │  3 online LangSmith evaluators fire  │  LangSmith project  ║
 ║             │  on every trace, score 0/1           │  compliance-agent   ║
+║─────────────┼─────────────────────────────────────┼─────────────────────║
+║  Human eval │  Block Kit buttons on every response │  answer_feedback    ║
+║             │  NEGATIVE busts Redis cache —        │  Postgres table     ║
+║             │  next answer uses fresh live data    │  + LangSmith        ║
+║             │                                      │  human_rating       ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
 
@@ -166,6 +191,9 @@
 ║─────────────────┼──────────────────────────────────────────────║
 ║  Source system  │  NetSuite ERP  (RESTlet API, OAuth 1.0a)      ║
 ║  Language       │  Python 3.9                                   ║
+║─────────────────┼──────────────────────────────────────────────║
+║  Feedback       │  Block Kit buttons · answer_feedback          ║
+║                 │  Postgres · LangSmith create_feedback()       ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
 
@@ -180,6 +208,7 @@
 | Prior context (Phase B) | `conversation_summaries` Postgres table | Haiku writes after each DM; retrieved by `_get_prior_summaries()` |
 | Thread history | Slack API (`fetch_dm_history` / `conversations_replies`) | Last 10 messages; trimmed by `_trim_history()` |
 | Tool result summaries | In-memory `ToolMessage` objects | Haiku via `_compress_tool_result()` — fires when result > 800 chars |
+| Feedback context (Phase C) | `answer_feedback` Postgres table | Written by `_save_feedback()` non-blocking after button click |
 
 ---
 

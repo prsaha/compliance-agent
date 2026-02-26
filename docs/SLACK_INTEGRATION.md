@@ -2,7 +2,7 @@
 
 **Project**: SOD Compliance System - Slack Integration
 **Date**: 2026-02-25
-**Version**: 2.0
+**Version**: 3.0
 
 ---
 
@@ -196,6 +196,50 @@ if prior:
 **Migration:** `database/migrations/006_add_conversation_summaries.sql`
 
 **Commits:** `3d1a1b3` (Phase B implementation), `71d6113` (Phase A + DM thread_history fix)
+
+---
+
+## 🎯 NEW: Feedback Loop — Human Answer Scoring (Feb 2026)
+
+Every bot response now includes three Block Kit buttons appended after the answer content:
+
+```
+✅  Correct    ❌  Wrong    🔧  Partial
+```
+
+### How it works
+
+1. `_feedback_blocks()` builds a Slack `actions` block encoding `run_id + user_email + query_preview + answer_preview + tool_called` as a pipe-separated button value.
+2. `handle_dm()` and `handle_mention()` append this block to `format_as_blocks(response)` before `client.chat_update()`.
+3. On click, `@app.action("feedback_button")` acks within 3s then dispatches `_save_feedback()` in a non-blocking `threading.Thread`.
+4. `_save_feedback()` writes to Postgres `answer_feedback` table, posts `human_rating` score to LangSmith `create_feedback()`, and on NEGATIVE signal deletes all `mcp:get_user_violations:*` Redis keys.
+5. `_replace_feedback_block_with_confirmation()` swaps buttons for a one-line confirmation so users cannot double-submit.
+
+### Signal → LangSmith score mapping
+
+| Button | Signal | LangSmith score | Redis side-effect |
+|---|---|---|---|
+| ✅ Correct | POSITIVE | 1.0 | — |
+| ❌ Wrong | NEGATIVE | 0.0 | Busts violation cache |
+| 🔧 Partial | PARTIAL | 0.5 | — |
+
+### Feature flag
+
+```
+USE_ANSWER_FEEDBACK=true   # default on; set false to hide buttons
+```
+
+### LangSmith visibility
+
+Human ratings appear in the **Feedback** tab of every `slack_compliance_query` trace alongside the 3 automated evaluators (`mcp_tool_called`, `mcp_tool_coverage`, `hallucination_heuristic`).
+
+### Postgres table
+
+`answer_feedback` — columns: `id, run_id, user_email, channel_id, message_ts, query_preview, answer_preview, signal, correction, tool_called, created_at`
+
+Migration: `database/migrations/007_add_answer_feedback.sql`
+
+**Commit:** `547c187`
 
 ---
 
@@ -1172,10 +1216,11 @@ Your existing MCP server serves:
 ---
 
 **Change Log:**
+- v3.0 (2026-02-26): Added feedback loop section — Block Kit buttons, `answer_feedback` table, LangSmith `human_rating` write-back, Redis cache bust on NEGATIVE
 - v2.0 (2026-02-25): Added Phase A Redis MCP cache and Phase B conversation summarization; DM thread_history fix
 
 ---
 
-**Document Version:** 2.0
+**Document Version:** 3.0
 **Last Updated:** 2026-02-22 (ChatAnthropic migration, LangSmith tracing, DM conversation context)
 **Maintained By:** DevOps Team

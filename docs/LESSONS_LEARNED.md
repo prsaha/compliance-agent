@@ -5841,12 +5841,46 @@ In a nested `@traceable` stack, `get_current_run_tree()` returns the **innermost
 
 ---
 
-**Document Version:** 2.0
-**Last Updated:** 2026-02-25 (Added Issue #38: context_cache_hit not appearing on root LangSmith run)
+### Issue #39: Slack button `value` field has a 2000-character hard limit
+
+**Date:** 2026-02-26
+**Severity:** Medium (silent data truncation / block rendering failure)
+
+**Symptom:**
+When encoding `run_id + user_email + query_preview + answer_preview + tool_called` as a pipe-separated `value` string in a Block Kit `button` element, Slack silently rejects the entire actions block if the value exceeds 2000 characters. The bot posts the answer but no feedback buttons appear.
+
+**Root cause:**
+Slack's Block Kit API enforces a strict 2000-character maximum on button `value` fields. Long queries or long bot answers easily exceed this limit when naively concatenated.
+
+**Fix:**
+Cap each preview field to 100 characters in `_feedback_blocks()`:
+
+```python
+payload = "|".join([
+    run_id or "",
+    user_email or "",
+    (query or "")[:100],   # cap at 100 chars
+    (answer or "")[:100],  # cap at 100 chars
+    tool_called or "",
+])
+```
+
+At ~36 chars (UUID) + ~30 chars (email) + 100 + 100 + ~30 (tool name) = ~296 chars max — well inside the 2000-char limit.
+
+**Lesson:**
+Always cap user-content fields before embedding them in Slack Block Kit `value` strings. Test with pathologically long inputs (1000+ char queries) before shipping feedback UIs.
+
+**Commit:** `547c187`
+
+---
+
+**Document Version:** 2.1
+**Last Updated:** 2026-02-26 (Added Issue #39: Slack button value 2000-char limit)
 **Maintainer:** Compliance Engineering Team
 **Next Review:** After Phase C semantic catalogue implementation
 
 **Change Log:**
+- v2.1 (2026-02-26): Added Issue #39 — Slack button value 2000-char limit
 - v2.0 (2026-02-25): Added Issue #38 — context_cache_hit not appearing on root LangSmith run
 - v1.9 (2026-02-25): Added Issues #34-37 — Redis cache bust on sync, additive-only sync bug, paginated RESTlet role coverage gap, NetSuite propagation delay
 - v1.8 (2026-02-23): Added Issue #33 — Haiku for tool dispatch, Opus for synthesis; verified trace c06830c0

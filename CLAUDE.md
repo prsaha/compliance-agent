@@ -824,6 +824,8 @@ A: Create new connector in `connectors/`, implement `BaseConnector` interface, r
 - [x] **NEW**: Phase B conversation summarization — Haiku summaries stored in Postgres, injected as prior context (Feb 2026)
 - [x] **NEW**: DM thread_history fix — handle_dm() now correctly passes prior conversation to Claude (Feb 2026)
 - [x] **NEW**: Fixed LangSmith `context_cache_hit` root-run tagging — `threading.local()` propagates cache hit flag from child span to root trace (2026-02-26)
+- [x] **NEW**: Angular Configuration Portal Phase 1 — JWT auth, 16 admin API endpoints, Angular 17 frontend with Dashboard/Violations/Exceptions/SOD Rules/Thresholds/Feature Flags screens (2026-02-26)
+- [x] **NEW**: Feedback loop — Block Kit buttons on every response; `answer_feedback` Postgres table; LangSmith `human_rating` write-back; Redis cache bust on NEGATIVE signal (2026-02-26)
 
 ### 🚧 Known Issues
 
@@ -831,16 +833,69 @@ A: Create new connector in `connectors/`, implement `BaseConnector` interface, r
 - FastAPI deprecation warnings (on_event → lifespan) - non-critical
 - Optional LLM packages not installed (OpenAI, Gemini, Cohere) - features work without them
 
+### 🖥️ Latest Enhancement: Angular Configuration Portal — Phase 1 (Feb 2026)
+
+A full Angular 17 admin portal is now live in `angular-portal/` backed by new FastAPI admin endpoints.
+
+**Backend — New admin API (`mcp/admin_api.py`):**
+- `POST /auth/login` — JWT issuance (L3+ NetSuite roles required)
+- `GET /auth/me` — current user + authority level
+- `GET /admin/system-health` — integration health check
+- `GET /admin/config` — all non-secret config items
+- `PATCH /admin/config/thresholds|notifications|scheduling|feature-flags|llm` — editable config
+- `GET/PATCH /admin/sod-rules` — view and edit 18 SOD rules
+- `GET/PATCH /admin/violations` — paginated violations with status updates
+- `GET /admin/exceptions` + `/due-review` — approved exceptions + overdue list
+- `GET /admin/audit-trail` — audit log
+- `GET /admin/token-analytics` — LLM cost/usage summary
+
+**Authority levels (derived from NetSuite roles):**
+- L3 (Director): read-only access
+- L4 (Controller/VP): read + edit thresholds, rules, notifications, scheduling
+- L5 (CFO): full access including feature flags, LLM config
+
+**Frontend — Angular portal (`angular-portal/`):**
+- Angular 17 + Angular Material (standalone components + signals)
+- JWT stored in-memory only (no localStorage, XSS-safe)
+- Auth guard + level guard for route protection
+- Lazy-loaded routes: Dashboard, Violations, Exceptions, SOD Rules, Thresholds, Feature Flags
+- Dev proxy: `proxy.conf.json` forwards `/auth` + `/admin` to `localhost:8080`
+
+**New dependencies:**
+```bash
+pip install "python-jose[cryptography]>=3.3.0" "passlib[bcrypt]>=1.7.4"
+```
+
+**Required new env vars:**
+```bash
+JWT_SECRET=<long-random-string>         # Required for JWT signing
+ADMIN_PORTAL_PASSWORD=<portal-password> # Portal login password (dev)
+JWT_EXPIRE_HOURS=8                      # Optional, default 8h
+```
+
+**Run the portal:**
+```bash
+# Start MCP server (includes new admin routes)
+./scripts/restart_mcp.sh
+
+# Start Angular dev server (with proxy)
+cd angular-portal && ng serve
+# Open http://localhost:4200
+```
+
+**See:** `docs/ANGULAR_UX_PLAN.md` for full spec and remaining phases (2-4).
+
 ### 📈 Future Enhancements
 
 See `docs/LESSONS_LEARNED.md` → Technical Debt section for full list.
 
 Priority items:
-1. Migrate FastAPI startup/shutdown to lifespan handlers
-2. Add integration tests for full sync workflow
-3. Implement log rotation for production
-4. Add Prometheus metrics for monitoring
-5. Create admin UI for rule management
+1. Angular Portal Phase 2 — Read-only screens: Audit Trail, Token Analytics
+2. Angular Portal Phase 3 — Editable config: Notifications, Scheduling, Integrations
+3. Angular Portal Phase 4 — LLM config, SOD rule severity editing, credential rotation
+4. Migrate FastAPI startup/shutdown to lifespan handlers
+5. Add integration tests for full sync workflow
+6. Implement log rotation for production
 
 ---
 
@@ -880,6 +935,7 @@ Priority items:
 ---
 
 **Version History:**
+- v1.4 (2026-02-26): Feedback loop — Block Kit buttons, answer_feedback table, LangSmith human_rating, Redis cache bust on NEGATIVE (commit 547c187)
 - v1.3 (2026-02-26): Fixed LangSmith context_cache_hit tagging (threading.local fix); load test script added (/tmp/load_test.py)
 - v1.2 (2026-02-22): Added LangSmith observability section, ChatAnthropic migration notes, DM conversation context, updated env vars and current status
 - v1.1 (2026-02-16): Updated MCP tool count (11→35), Slack bot multi-turn agentic tool use
