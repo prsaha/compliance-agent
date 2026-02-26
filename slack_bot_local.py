@@ -107,6 +107,25 @@ _MUTATING_TOOLS = {
 _cache_hit_tls = threading.local()
 
 # ---------------------------------------------------------------------------
+# Human feedback loop — Block Kit buttons on every response
+# Feature flag: set USE_ANSWER_FEEDBACK=false in .env to disable
+# ---------------------------------------------------------------------------
+USE_ANSWER_FEEDBACK = os.getenv("USE_ANSWER_FEEDBACK", "true").lower() == "true"
+
+_langsmith_client = None
+
+def _get_langsmith_client():
+    """Lazy LangSmith client for create_feedback() calls."""
+    global _langsmith_client
+    if _langsmith_client is None:
+        try:
+            from langsmith import Client
+            _langsmith_client = Client()
+        except Exception as e:
+            logger.warning(f"LangSmith client unavailable: {e}")
+    return _langsmith_client
+
+# ---------------------------------------------------------------------------
 # Phase B — Conversation Summarization
 # Feature flag: set USE_CONV_SUMMARIES=false in .env to disable
 # ---------------------------------------------------------------------------
@@ -536,6 +555,148 @@ def format_as_blocks(text: str) -> List[Dict[str, Any]]:
     return blocks or [{"type": "section", "text": {"type": "mrkdwn", "text": text[:3000]}}]
 
 
+def _feedback_blocks(run_id: str, user_email: str,
+                     query: str, answer: str, tool_called: str) -> Dict[str, Any]:
+    """
+    Build a Slack actions block with 3 feedback buttons appended to bot responses.
+
+    All context is encoded into button value (pipe-separated) so the action handler
+    has everything it needs without a Redis lookup.
+    Max value length is 2000 chars — previews are capped at 100 chars each.
+    """
+    payload = "|".join([
+        run_id or "",
+        user_email or "",
+        (query or "")[:100],
+        (answer or "")[:100],
+        tool_called or "",
+    ])
+    return {
+        "type": "actions",
+        "block_id": f"feedback_{(run_id or 'noid')[:36]}",
+        "elements": [
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "✅  Correct"},
+                "value": f"POSITIVE|{payload}",
+                "action_id": "feedback_button",
+            },
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "❌  Wrong"},
+                "style": "danger",
+                "value": f"NEGATIVE|{payload}",
+                "action_id": "feedback_button",
+            },
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "🔧  Partial"},
+                "value": f"PARTIAL|{payload}",
+                "action_id": "feedback_button",
+            },
+        ],
+    }
+
+
+def _save_feedback(signal: str, run_id: str, user_email: str, channel_id: str,
+                   message_ts: str, query: str, answer: str, tool_called: str) -> None:
+    """
+    Persist human feedback non-blocking (called via threading.Thread).
+
+    1. Writes to Postgres answer_feedback table.
+    2. Posts score to LangSmith create_feedback() so it appears in Feedback tab.
+    3. On NEGATIVE: busts all get_user_violations Redis cache keys so the next
+       query makes a fresh live call and returns up-to-date data.
+    """
+    _SIGNAL_SCORES = {"POSITIVE": 1.0, "NEGATIVE": 0.0, "PARTIAL": 0.5, "UNCLEAR": 0.3}
+
+    # 1. Postgres write
+    try:
+        session = _get_db_session()
+        if session:
+            try:
+                from models.answer_feedback import AnswerFeedback
+                row = AnswerFeedback(
+                    run_id=run_id or None,
+                    user_email=user_email,
+                    channel_id=channel_id,
+                    message_ts=message_ts,
+                    query_preview=(query or "")[:200],
+                    answer_preview=(answer or "")[:200],
+                    signal=signal,
+                    tool_called=tool_called or None,
+                )
+                session.add(row)
+                session.commit()
+                logger.info(f"Saved feedback {signal} for {user_email} run={run_id}")
+            except Exception as e:
+                session.rollback()
+                logger.warning(f"Could not save answer feedback: {e}")
+            finally:
+                session.close()
+    except Exception as e:
+        logger.warning(f"Feedback DB write failed: {e}")
+
+    # 2. LangSmith score write-back
+    if run_id:
+        try:
+            ls = _get_langsmith_client()
+            if ls:
+                ls.create_feedback(
+                    run_id=run_id,
+                    key="human_rating",
+                    score=_SIGNAL_SCORES.get(signal, 0.3),
+                    comment=f"Slack feedback: {signal}",
+                )
+                logger.info(f"LangSmith feedback posted: {signal} → {_SIGNAL_SCORES.get(signal)}")
+        except Exception as e:
+            logger.warning(f"LangSmith feedback write failed: {e}")
+
+    # 3. Redis cache bust on NEGATIVE
+    if signal == "NEGATIVE":
+        try:
+            r = _get_redis()
+            if r:
+                keys = r.keys("mcp:get_user_violations:*")
+                if keys:
+                    r.delete(*keys)
+                    logger.info(f"Busted {len(keys)} violation cache key(s) after NEGATIVE feedback")
+        except Exception as e:
+            logger.warning(f"Redis cache bust failed: {e}")
+
+
+def _replace_feedback_block_with_confirmation(client, body: dict, signal: str) -> None:
+    """
+    Replace the feedback actions block with a one-line confirmation so users
+    cannot double-submit and the message looks clean after voting.
+    """
+    _CONFIRMATIONS = {
+        "POSITIVE": "✅  Got it — marked as correct. Thanks!",
+        "NEGATIVE": "❌  Got it — marked as wrong. Cache cleared, next query will re-fetch live data.",
+        "PARTIAL":  "🔧  Got it — marked as partial. Thanks for the signal.",
+        "UNCLEAR":  "❓  Got it — marked as unclear.",
+    }
+    try:
+        channel = body["container"]["channel_id"]
+        msg_ts  = body["container"]["message_ts"]
+        existing_blocks = body.get("message", {}).get("blocks", [])
+
+        # Replace the feedback actions block; keep all other blocks
+        new_blocks = [
+            b for b in existing_blocks
+            if not (b.get("type") == "actions" and
+                    b.get("block_id", "").startswith("feedback_"))
+        ]
+        new_blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn",
+                          "text": _CONFIRMATIONS.get(signal, "✅  Feedback recorded.")}],
+        })
+        client.chat_update(channel=channel, ts=msg_ts, blocks=new_blocks)
+    except Exception as e:
+        logger.warning(f"Could not replace feedback block: {e}")
+
+
 def fetch_dm_history(client, channel: str, bot_user_id: str, current_ts: str, limit: int = 10) -> list:
     """
     Fetch recent messages from a DM channel as conversation history.
@@ -758,6 +919,7 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
                 if cache_hit:
                     root_run.metadata["cache_tool"] = getattr(_cache_hit_tls, "tool", "")
                 _cache_hit_tls.hit = False  # reset for next call
+                _cache_hit_tls.run_id = str(root_run.id)  # expose to handle_dm/mention
         except Exception:
             pass
 
@@ -925,12 +1087,19 @@ def handle_mention(event, say, client):
             stop_event.set()
             anim_thread.join(timeout=3)
 
+        # Build blocks: response content + optional feedback buttons
+        run_id = getattr(_cache_hit_tls, "run_id", None)
+        tool_called = getattr(_cache_hit_tls, "tool", "")
+        blocks = format_as_blocks(response)
+        if USE_ANSWER_FEEDBACK and run_id:
+            blocks.append(_feedback_blocks(run_id, user_email, message_text_clean, response, tool_called))
+
         # Update the thinking message in-place with the real response
         client.chat_update(
             channel=channel,
             ts=thinking_ts,
             text=response,
-            blocks=format_as_blocks(response)
+            blocks=blocks,
         )
 
     except Exception as e:
@@ -1006,12 +1175,19 @@ def handle_dm(event, say, client):
             daemon=True,
         ).start()
 
+        # Build blocks: response content + optional feedback buttons
+        run_id = getattr(_cache_hit_tls, "run_id", None)
+        tool_called = getattr(_cache_hit_tls, "tool", "")
+        blocks = format_as_blocks(response)
+        if USE_ANSWER_FEEDBACK and run_id:
+            blocks.append(_feedback_blocks(run_id, user_email, message_text, response, tool_called))
+
         # Update the thinking message in-place with the real response
         client.chat_update(
             channel=channel,
             ts=thinking_ts,
             text=response,
-            blocks=format_as_blocks(response)
+            blocks=blocks,
         )
 
     except Exception as e:
@@ -1020,6 +1196,37 @@ def handle_dm(event, say, client):
             text=f"❌ Sorry, I encountered an error: {str(e)}",
             blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": f"❌ Sorry, I encountered an error: {str(e)}"}}]
         )
+
+
+@app.action("feedback_button")
+def handle_feedback(ack, body, client):
+    """
+    Handle ✅ / ❌ / 🔧 button clicks appended to every bot response.
+
+    Acks immediately (Slack requires < 3s), then dispatches a non-blocking
+    thread to write to Postgres + LangSmith and optionally bust Redis cache.
+    """
+    ack()
+    try:
+        raw_value = body["actions"][0]["value"]     # "SIGNAL|run_id|email|query|answer|tool"
+        parts = raw_value.split("|", 5)
+        if len(parts) < 6:
+            parts += [""] * (6 - len(parts))
+        signal, run_id, user_email, query, answer, tool_called = parts
+
+        channel  = body["container"]["channel_id"]
+        msg_ts   = body["container"]["message_ts"]
+
+        threading.Thread(
+            target=_save_feedback,
+            args=(signal, run_id, user_email, channel, msg_ts, query, answer, tool_called),
+            daemon=True,
+        ).start()
+
+        _replace_feedback_block_with_confirmation(client, body, signal)
+
+    except Exception as e:
+        logger.error(f"Feedback action handler error: {e}")
 
 
 @app.command("/compliance")
