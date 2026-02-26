@@ -5804,13 +5804,49 @@ No code fix is possible for the RESTlet propagation delay itself. Mitigations:
 
 > **Account for all caching layers between the source of truth and the user-facing response.** Even after fixing application-level caches, external system propagation delays can cause temporary inconsistencies. Design for eventual consistency: document the lag, instrument it (log sync timestamps in responses), and set user expectations.
 
+
+### Issue #38: `context_cache_hit` not appearing on root LangSmith run
+
+**Date:** 2026-02-25
+**Severity:** Minor (observability only)
+
+**Symptom:**
+`context_cache_hit` metadata set inside `call_mcp_tool()` never appeared on the root `slack_compliance_query` trace when queried via LangSmith API (`extra.metadata`). The field showed as `NOT SET` on all root runs.
+
+**Root cause:**
+`call_mcp_tool` is decorated with `@traceable(run_type="tool")`, which creates a child span. Inside it, `get_current_run_tree()` returns the **child span's** `RunTree` object, not the root `slack_compliance_query` run. Setting `run.metadata["context_cache_hit"]` on the child span only updates the child — the root trace's `extra.metadata` is never touched.
+
+**Fix:**
+Use `threading.local()` (`_cache_hit_tls`) to propagate the cache-hit flag from `call_mcp_tool()` back up to `process_with_claude()`. At the end of `process_with_claude()`, call `get_current_run_tree()` (which now correctly returns the root run) and set `context_cache_hit` there.
+
+```python
+# call_mcp_tool — cache hit branch
+_cache_hit_tls.hit = True
+_cache_hit_tls.tool = tool_name
+
+# process_with_claude — before return
+root_run = get_current_run_tree()
+if root_run:
+    cache_hit = getattr(_cache_hit_tls, "hit", False)
+    root_run.metadata["context_cache_hit"] = cache_hit
+    if cache_hit:
+        root_run.metadata["cache_tool"] = getattr(_cache_hit_tls, "tool", "")
+    _cache_hit_tls.hit = False
+```
+
+**Lesson:**
+In a nested `@traceable` stack, `get_current_run_tree()` returns the **innermost** active span. Always tag the root run from the outermost `@traceable` function, never from a child span. Use thread-locals or return values to propagate state upward.
+
+**Commit:** `424fcf7`
+
 ---
 
-**Document Version:** 1.9
-**Last Updated:** 2026-02-25 (Added Issues #34-37: Redis cache bust, additive sync bug, paginated RESTlet blind spot, NetSuite propagation delay)
+**Document Version:** 2.0
+**Last Updated:** 2026-02-25 (Added Issue #38: context_cache_hit not appearing on root LangSmith run)
 **Maintainer:** Compliance Engineering Team
 **Next Review:** After Phase C semantic catalogue implementation
 
 **Change Log:**
+- v2.0 (2026-02-25): Added Issue #38 — context_cache_hit not appearing on root LangSmith run
 - v1.9 (2026-02-25): Added Issues #34-37 — Redis cache bust on sync, additive-only sync bug, paginated RESTlet role coverage gap, NetSuite propagation delay
 - v1.8 (2026-02-23): Added Issue #33 — Haiku for tool dispatch, Opus for synthesis; verified trace c06830c0

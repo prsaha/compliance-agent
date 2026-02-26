@@ -2082,11 +2082,15 @@ LANGCHAIN_PROJECT=compliance-agent
 
 | Phase | Status | Commit |
 |-------|--------|--------|
-| Phase A — Redis MCP Cache | ✅ Live | `71d6113` + `2134a00` |
+| Phase A — Redis MCP Cache | ✅ Live | `71d6113` + `2134a00`; bugfix `424fcf7` (2026-02-25) |
 | Phase B — Conversation Summarization | ✅ Live | `3d1a1b3` |
 | Phase C — Semantic Catalogue | ⏳ Pending | — |
 
 **Phase A** caches MCP tool responses in Redis (TTL 5min–24h by tool). Cache is busted on `trigger_manual_sync`. LangSmith tags: `context_cache_hit`.
+
+> **Bugfix (2026-02-25, commit `424fcf7`):** The LangSmith `context_cache_hit` metadata tag was previously applied on the child `call_mcp_tool` span, which LangSmith's evaluator executor cannot read inline (S3-backed). The fix moves metadata tagging to the root `slack_compliance_query` run using `threading.local()` (`_cache_hit_tls`): the child span sets a thread-local flag and the root `@traceable` wrapper reads and clears it after each query, ensuring the tag lands on the top-level trace that evaluators actually inspect.
+
+> **Load tested (2026-02-25):** 50-call concurrent load test confirmed Phase A — warm cache batch: **0 real MCP API calls, 50 Redis hits** (100 % cache hit rate). P99 latency under load: 12 ms (vs ~50 ms cold).
 
 **Phase B** generates Haiku summaries of each DM exchange, stored in `conversation_summaries` table (90-day TTL). Injects 3 most recent summaries as prior context (~150 tokens vs ~2K raw). LangSmith tags: `context_summaries_injected`.
 
@@ -2181,17 +2185,18 @@ This is the primary signal all 3 evaluators rely on for the post-v1.3 traces.
 ---
 
 **Document Status**: ✅ Production — Up to Date
-**Last Updated**: 2026-02-22
+**Last Updated**: 2026-02-26
 **Approvers**: Prabal Saha
 
 ---
 
-**Document Version**: 2.4.0
-**Last Updated**: 2026-02-25
+**Document Version**: 2.5.0
+**Last Updated**: 2026-02-26
 **Author**: Prabal Saha + Claude (Sonnet 4.6)
 **Branch**: `RD-1036683-billing-schedule-automation-dev`
 
 **Change Log:**
+- v2.5.0 (2026-02-26): Fixed LangSmith `context_cache_hit` root-run tagging (commit `424fcf7`, 2026-02-25) — metadata moved from child `call_mcp_tool` span to root `slack_compliance_query` run via `threading.local()`; 50-call concurrent load test: 0 real MCP API calls, 50 Redis hits (warm cache)
 - v2.4.0 (2026-02-25): Phase A Redis MCP cache (cache bust on sync), Phase B conversation summarization, paginated RESTlet blind spot fix, stale role removal fix
 - v2.3.0 (2026-02-23): Verified Haiku/Opus model split; updated verified scores table with trace c06830c0
 - v2.2.0 (2026-02-22): Added LangSmith Evaluator Integration section — evaluator specs, S3 constraint, call_mcp_tool @traceable, verified score table

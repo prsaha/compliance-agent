@@ -1,6 +1,6 @@
 # Redis Cache Implementation - Complete Guide
 
-**Version**: 3.3.0
+**Version**: 3.4.0
 **Date**: 2026-02-25
 **Status**: ✅ Production Ready
 
@@ -676,6 +676,13 @@ run.metadata["cache_tool"] = tool_name
 
 Filter LangSmith by `metadata.context_cache_hit = true` to measure cache hit rate and compare cost vs cache-miss traces.
 
+**LangSmith tagging (fixed 2026-02-25, commit 424fcf7):**
+`context_cache_hit` and `cache_tool` are set on the root `slack_compliance_query`
+run via `threading.local()`. Setting them inside `call_mcp_tool()` (a child
+`@traceable` span) only updates the child span — never the root trace's
+`extra.metadata`. Fix: propagate via `_cache_hit_tls` thread-local; tag the root
+run at the end of `process_with_claude()`.
+
 ### Feature Flag
 
 ```bash
@@ -697,6 +704,6 @@ REDIS_URL=redis://localhost:6379/0
 
 ---
 
-**Document Version**: 1.0
-**Last Updated**: 2026-02-12
+**Document Version**: 1.1
+**Last Updated**: 2026-02-25
 **Author**: Prabal Saha + Claude (Sonnet 4.5)

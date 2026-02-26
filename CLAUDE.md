@@ -1,7 +1,7 @@
 # Claude Code Project Guide: SOD Compliance System
 
 **Project:** AI-Powered Segregation of Duties (SOD) Compliance System
-**Version:** 1.2
+**Version:** 1.3
 **Last Updated:** 2026-02-22
 **Primary Language:** Python 3.9+
 **Framework:** FastAPI with MCP (Model Context Protocol)
@@ -92,7 +92,7 @@ MCP tool calls are now cached in Redis to eliminate redundant calls within a TTL
 - TTL map: `get_user_violations=1h`, `get_role_conflicts=24h`, `get_violation_stats=30min`, `analyze_access_request=1h`
 - Mutating tools excluded: `trigger_manual_sync`, `approve_exception`, `request_exception_approval`
 - Feature flag: `USE_MCP_CACHE=false` in `.env` to disable
-- LangSmith: cache hits tagged with `metadata.context_cache_hit=true` and `metadata.cache_tool`
+- LangSmith: cache hits tagged with `metadata.context_cache_hit=true` and `metadata.cache_tool` — note: the tag is applied on the ROOT run (not child span) via `_cache_hit_tls` thread-local (fixed commit `424fcf7`, 2026-02-25)
 - Verified: Cache HIT at 0.01s vs MISS at ~50ms in logs
 
 **Phase A bugfix also included:** `handle_dm()` was calling `process_with_claude()` without `thread_history`. Fixed to call `fetch_dm_history()` first. Token impact: 3,485 → 5,494 per follow-up query (expected — prior context now injected).
@@ -823,6 +823,7 @@ A: Create new connector in `connectors/`, implement `BaseConnector` interface, r
 - [x] **NEW**: Phase A Redis TTL cache — MCP tool call deduplication within TTL window (Feb 2026)
 - [x] **NEW**: Phase B conversation summarization — Haiku summaries stored in Postgres, injected as prior context (Feb 2026)
 - [x] **NEW**: DM thread_history fix — handle_dm() now correctly passes prior conversation to Claude (Feb 2026)
+- [x] **NEW**: Fixed LangSmith `context_cache_hit` root-run tagging — `threading.local()` propagates cache hit flag from child span to root trace (2026-02-26)
 
 ### 🚧 Known Issues
 
@@ -879,9 +880,10 @@ Priority items:
 ---
 
 **Version History:**
+- v1.3 (2026-02-26): Fixed LangSmith context_cache_hit tagging (threading.local fix); load test script added (/tmp/load_test.py)
 - v1.2 (2026-02-22): Added LangSmith observability section, ChatAnthropic migration notes, DM conversation context, updated env vars and current status
 - v1.1 (2026-02-16): Updated MCP tool count (11→35), Slack bot multi-turn agentic tool use
 - v1.0 (2026-02-12): Initial comprehensive guide
 
 **Maintained by:** AI Development Team
-**Last Verified:** 2026-02-22
+**Last Verified:** 2026-02-26
