@@ -112,11 +112,23 @@ After each DM exchange, Haiku generates a 2-3 sentence summary stored in Postgre
 ```bash
 USE_MCP_CACHE=true          # Phase A (default: true)
 USE_CONV_SUMMARIES=true     # Phase B (default: true)
+USE_ANSWER_FEEDBACK=true    # Phase feedback loop (default: true)
 REDIS_URL=redis://localhost:6379/0
 DATABASE_URL=postgresql://...  # already required
 ```
 
 **See:** `database/migrations/006_add_conversation_summaries.sql` for schema.
+
+**Phase feedback — Human Answer Scoring** (`slack_bot_local.py` + `models/answer_feedback.py`, deployed 2026-02-26):
+
+Block Kit ✅/❌/🔧 buttons appended to every bot response. On click, feedback written non-blocking to Postgres and LangSmith `create_feedback()`. Negative feedback busts the Redis violation cache immediately.
+
+- New table: `answer_feedback` (run_id, signal, correction, tool_called, query_preview, answer_preview)
+- Migration: `database/migrations/007_add_answer_feedback.sql`
+- Model: `models/answer_feedback.py`
+- LangSmith: `human_rating` score (1.0/0.0/0.5) visible in Feedback tab alongside 3 auto-evals
+- Redis: NEGATIVE signal deletes all `mcp:get_user_violations:*` keys
+- Feature flag: `USE_ANSWER_FEEDBACK=false` in `.env` to disable
 
 ---
 
