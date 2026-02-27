@@ -649,7 +649,7 @@ def _trim_response_for_slack(response: str, client, channel: str) -> str:
     permalink = _upload_full_response(client, channel, "Full Compliance Analysis", response)
     if permalink:
         return trimmed + f"\n\n_Full analysis →_ {permalink}"
-    return trimmed + "\n\n_[Response truncated — could not upload full analysis]_"
+    return trimmed + "\n\n_Ask me about a specific role for the complete breakdown (e.g. 'tell me more about the Controller role')._"
 
 
 def _save_feedback(signal: str, run_id: str, user_email: str, channel_id: str,
@@ -892,9 +892,16 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
             "    get_role_risk_matrix() returns a complete precomputed matrix of all 153 role pairs and intra-role conflicts. "
             "    Only add role_name if the question is about one specific role. "
             "    list_violations only reflects current user assignments and will miss most roles. "
-            "    RESPONSE FORMAT for get_role_risk_matrix results: write one concise verdict sentence, then 4-5 bullet points "
-            "    covering the highest-risk roles and worst conflict patterns, then one direct recommendation. "
-            "    Total Slack response must stay under 1,800 characters — do NOT reproduce the raw matrix rows or permission-level detail.\n"
+            "    RESPONSE FORMAT — HARD LIMIT for get_role_risk_matrix: "
+            "    (1) One sentence verdict. "
+            "    (2) Top 3 bullet points ONLY — worst intra-role role, worst cross-role pair, root cause. "
+            "    (3) One direct recommendation sentence. "
+            "    MAXIMUM 1,200 characters total. Do NOT list every role or every conflict. Do NOT reproduce permission names or levels. "
+            "    If the user wants more detail on a specific role, they can ask a follow-up.\n"
+            "GLOBAL RESPONSE LENGTH: Every Slack response must be under 1,800 characters. "
+            "If a complete answer requires more, give the most critical 3 points and end with "
+            "'Ask me about [specific topic] for the complete breakdown.' "
+            "Never write a response that would be truncated mid-sentence.\n\n"
             "  • Question is about a SPECIFIC PERSON's violations or 'who currently has violations' — call get_user_violations or list_violations(roles_only=False).\n"
             "  • Question is about violation COUNTS or STATS — call get_violation_stats.\n"
             "  • Never substitute list_violations for get_role_risk_matrix for role-risk questions.\n"
