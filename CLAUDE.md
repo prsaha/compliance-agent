@@ -1,8 +1,8 @@
 # Claude Code Project Guide: SOD Compliance System
 
 **Project:** AI-Powered Segregation of Duties (SOD) Compliance System
-**Version:** 1.3
-**Last Updated:** 2026-02-22
+**Version:** 1.6
+**Last Updated:** 2026-02-27
 **Primary Language:** Python 3.9+
 **Framework:** FastAPI with MCP (Model Context Protocol)
 
@@ -24,7 +24,7 @@ This is an autonomous compliance monitoring system that peforms user access revi
 - ✅ 1,928/1,933 users synced from NetSuite (99.7% coverage)
 - ✅ 18 SOD rules implemented and active
 - ✅ 55x query performance improvement (on-demand → cached)
-- ✅ 35 MCP tools operational (updated from 11)
+- ✅ 37 MCP tools operational (updated from 11)
 - ✅ Autonomous agent running 24/7
 - ✅ **NEW**: Slack bot with multi-turn agentic reasoning (Feb 2026)
 
@@ -188,6 +188,7 @@ Phase 3: Knowledge Base (pgvector)
 | **NetSuite Connector** | `connectors/netsuite_connector.py` | RESTlet API integration |
 | **Knowledge Agent** | `agents/knowledge_base_agent.py` | pgvector semantic search |
 | **LLM Layer** | `services/llm_service.py` | Multi-provider abstraction (Anthropic/OpenAI/Gemini) |
+| **Tool Router** | `utils/tool_router.py` | Pre-filter that limits which tools Claude sees per query (saves ~8K tokens). Every new MCP tool must be registered here. |
 
 ---
 
@@ -480,8 +481,9 @@ python3 -c "from services.netsuite_client import NetSuiteClient; client = NetSui
        pass
    ```
 3. Add to `TOOLS` list in startup function
-4. Restart server
-5. Verify with `tools/list` MCP request
+4. **Register in `utils/tool_router.py`** — add the tool name to the appropriate intent group (or create a new group). Without this step, Claude will never see the tool because the router pre-filters the tool list before each query.
+5. Restart server
+6. Verify with `tools/list` MCP request
 
 ### 3. Debugging Data Collection Issues
 
@@ -816,7 +818,7 @@ A: Create new connector in `connectors/`, implement `BaseConnector` interface, r
 
 ---
 
-## 🎯 Current Status (2026-02-22)
+## 🎯 Current Status (2026-02-27)
 
 ### ✅ Completed
 
@@ -839,6 +841,12 @@ A: Create new connector in `connectors/`, implement `BaseConnector` interface, r
 - [x] **NEW**: Angular Configuration Portal Phase 1 — JWT auth, 16 admin API endpoints, Angular 17 frontend with Dashboard/Violations/Exceptions/SOD Rules/Thresholds/Feature Flags screens (2026-02-26)
 - [x] **NEW**: Feedback loop — Block Kit buttons on every response; `answer_feedback` Postgres table; LangSmith `human_rating` write-back; Redis cache bust on NEGATIVE signal (2026-02-26)
 - [x] **NEW**: FivetranChat-style formatting — clean prose responses, no decorative emojis; feedback buttons simplified to 👎 👍 (2026-02-27)
+- [x] **NEW**: Role risk matrix — precomputed SOD conflict matrix for all 17 Fivetran roles and 153 role pairs. Tables: `sod_permission_map`, `role_pair_conflicts` (443 rows). Analysis job: `scripts/build_role_risk_matrix.py`. Level-aware: None < View < Create < Edit < Full. (2026-02-27)
+- [x] **NEW**: `get_role_risk_matrix` MCP tool — queries precomputed matrix with role_name/severity/intra/cross filters. Cached 24h. (2026-02-27)
+- [x] **NEW**: `list_violations` MCP tool — department/severity filters, roles_only mode, DISTINCT ON deduplication. (2026-02-27)
+- [x] **NEW**: `role_risk` intent group in `utils/tool_router.py` — routes role-risk queries to `get_role_risk_matrix`. (2026-02-27)
+- [x] **NEW**: McKinsey partner voice in system prompt — executive language, conclusions first, direct recommendations. (2026-02-27)
+- [x] **NEW**: `_trim_history` fix — prevents orphaned tool_result blocks (Anthropic API 400) by trimming only at HumanMessage boundaries. (2026-02-27)
 
 ### 🚧 Known Issues
 
@@ -948,6 +956,7 @@ Priority items:
 ---
 
 **Version History:**
+- v1.6 (2026-02-27): Role risk matrix (17 roles, 153 pairs, 443 conflict rows); get_role_risk_matrix + list_violations tools; tool_router role_risk intent group; McKinsey partner voice; _trim_history API-400 fix
 - v1.5 (2026-02-27): FivetranChat-style formatting (clean prose, no emoji); feedback buttons 👎 👍 (commit 948f495)
 - v1.4 (2026-02-26): Feedback loop — Block Kit buttons, answer_feedback table, LangSmith human_rating, Redis cache bust on NEGATIVE (commit 547c187)
 - v1.3 (2026-02-26): Fixed LangSmith context_cache_hit tagging (threading.local fix); load test script added (/tmp/load_test.py)
@@ -956,4 +965,4 @@ Priority items:
 - v1.0 (2026-02-12): Initial comprehensive guide
 
 **Maintained by:** AI Development Team
-**Last Verified:** 2026-02-26
+**Last Verified:** 2026-02-27

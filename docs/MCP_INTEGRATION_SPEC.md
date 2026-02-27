@@ -2187,18 +2187,214 @@ This is the primary signal all 3 evaluators rely on for the post-v1.3 traces.
 
 ---
 
+## Role Risk Matrix: Database Tables
+
+The role risk matrix is a precomputed SOD conflict database covering all 17 Fivetran roles and 153 unique role pairs. It is built by `scripts/build_role_risk_matrix.py` and stored in two tables.
+
+### `sod_permission_map`
+
+Maps each Fivetran role to the individual permission-level it holds per functional area. Level ordering: `None < View < Create < Edit < Full`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `role_name` | text | Fivetran role display name (e.g., `"Fivetran - Controller"`) |
+| `permission_area` | text | Functional area (e.g., `"AP Processing"`, `"Payroll"`) |
+| `permission_level` | text | One of `None`, `View`, `Create`, `Edit`, `Full` |
+| `numeric_level` | int | Ordinal encoding: None=0, View=1, Create=2, Edit=3, Full=4 |
+
+**Row count:** varies by role (typically 15–25 permission areas per role).
+
+### `role_pair_conflicts`
+
+One row per (role_a, role_b, sod_rule) combination where the pair violates an active SOD rule.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `role_a` | text | First role in the pair (alphabetically first) |
+| `role_b` | text | Second role in the pair |
+| `sod_rule_id` | uuid | FK → `sod_rules.id` |
+| `rule_name` | text | Human-readable rule name |
+| `severity` | text | `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` |
+| `conflict_type` | text | `intra_role` (single role self-conflict) or `cross_role` (between two roles) |
+| `permission_area_a` | text | Conflicting permission area held by role_a |
+| `permission_area_b` | text | Conflicting permission area held by role_b |
+| `level_a` | text | Permission level of role_a in area_a |
+| `level_b` | text | Permission level of role_b in area_b |
+
+**Row count:** 443 rows across 153 role pairs (as of 2026-02-27).
+
+**Level-aware conflict detection:** a permission area only constitutes a conflict when the role holds level `Create` or higher (not `None` or `View`). This eliminates false positives from read-only access.
+
+**Rebuild command:**
+```bash
+python3 scripts/build_role_risk_matrix.py
+```
+
+---
+
+## New MCP Tools (v2.8.0)
+
+### `get_role_risk_matrix`
+
+**Purpose:** Query the precomputed SOD conflict matrix for one or more roles without hitting the violations table. Ideal for access-request screening ("what conflicts would this role combination produce?") and role-level risk reporting.
+
+**When to use vs `list_violations`:**
+- Use `get_role_risk_matrix` when the question is about **roles** (e.g., "what are the conflicts for the Controller role?", "is this role combination safe?").
+- Use `list_violations` when the question is about **users with active violations** (e.g., "who has CRITICAL violations in Finance?").
+
+**Input schema:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `role_name` | string | No | Filter to conflicts involving this role (partial match). Omit to return all roles. |
+| `severity` | string | No | Filter by severity: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`. |
+| `include_intra_role` | boolean | No (default `true`) | Include single-role self-conflicts. |
+| `include_cross_role` | boolean | No (default `true`) | Include conflicts between two distinct roles. |
+| `limit` | integer | No (default `50`) | Maximum rows to return. |
+
+**Caching:** Results are cached in Redis for 24 hours (key prefix: `mcp:get_role_risk_matrix:`).
+
+**Example call:**
+```json
+{
+  "name": "get_role_risk_matrix",
+  "arguments": {
+    "role_name": "Controller",
+    "severity": "CRITICAL",
+    "include_intra_role": false
+  }
+}
+```
+
+**Example output (abridged):**
+```
+Role Risk Matrix — Controller (CRITICAL, cross-role only)
+
+Role Pair                              Rule                         Areas
+Controller + Administrator             AP Entry vs Approval         AP Processing / Payment Approval
+Controller + Fivetran - Full Access    Journal Entry vs GL Posting  GL / Journal Entries
+
+2 CRITICAL cross-role conflicts found.
+```
+
+---
+
+### `list_violations`
+
+**Purpose:** Return active violations from the `violations` table with optional filtering by department, severity, and status. Supports a `roles_only` mode that collapses per-user rows into a deduplicated role-centric view.
+
+**Input schema:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `department` | string | No | Partial match against `users.department` (e.g., `"Finance"`). |
+| `severity` | string | No | Filter by severity: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`. |
+| `status` | string | No | Filter by violation status: `OPEN`, `RESOLVED`, `EXCEPTION`. Defaults to `OPEN`. |
+| `roles_only` | boolean | No (default `false`) | When `true`, returns one row per unique role-pair combination (`DISTINCT ON`) instead of one row per user-violation. |
+| `limit` | integer | No (default `50`) | Maximum rows to return. |
+
+**Two operating modes:**
+
+1. **Default (`roles_only=false`):** Returns user-level violations. Each row includes user email, roles, rule violated, severity, and detection date. Use for "who is in violation?" queries.
+
+2. **Roles-only (`roles_only=true`):** Uses `DISTINCT ON (role_a, role_b, sod_rule_id)` to return one representative row per role-pair conflict. Use for "what role combinations are causing violations?" without enumerating every affected user.
+
+**Example call (roles-only):**
+```json
+{
+  "name": "list_violations",
+  "arguments": {
+    "department": "Finance",
+    "severity": "CRITICAL",
+    "roles_only": true,
+    "limit": 20
+  }
+}
+```
+
+**Example output (roles-only mode):**
+```
+CRITICAL Role-Pair Violations — Finance (roles_only)
+
+Role A                    Role B                Rule                      Count
+Controller                Administrator         AP Entry vs Approval      12 users
+Fivetran - Full Access    Controller            GL Posting vs Entry       4 users
+
+2 distinct CRITICAL role pairs. 16 users affected.
+```
+
+---
+
+## Tool Router: `utils/tool_router.py`
+
+### What it does
+
+The tool router is a **pre-filter** executed before each Slack query. Instead of sending all 37 MCP tool definitions to Claude on every turn (which would consume ~8K tokens of context window), the router inspects the user's query and returns only the subset of tools that are relevant to the detected intent.
+
+This has two benefits:
+1. **Token savings:** ~8K tokens saved per query when the full tool list is not needed.
+2. **Reduced noise:** Claude makes better tool-selection decisions when presented with 5–10 focused tools rather than 37.
+
+### How it works
+
+```
+User query text
+      │
+      ▼
+tool_router.route(query: str) → List[str]   # returns tool names
+      │
+      ├── keyword/regex matching against intent groups
+      │
+      └── returns union of matched groups + always-on tools
+```
+
+The router is called once per Slack message in `process_with_claude()`. The returned tool names are used to filter the full MCP tool list before binding tools to the LangChain model.
+
+### Intent groups
+
+| Group name | Trigger keywords (examples) | Tools included |
+|------------|----------------------------|----------------|
+| `violations` | violation, sod, conflict, breach | `list_violations`, `get_user_violations`, `get_violation_stats` |
+| `access_request` | assign, grant, can I give, role to, access for | `analyze_access_request`, `check_my_approval_authority` |
+| `role_risk` | role risk, what conflicts, risk matrix, role combination, safe to assign | `get_role_risk_matrix`, `list_violations` |
+| `user_lookup` | who is, find user, list users, department | `list_all_users`, `get_user_profile` |
+| `reporting` | report, export, excel, csv, summary | `generate_violation_report`, `get_violation_stats` |
+| `exceptions` | exception, approve, waiver, compensating | `request_exception_approval`, `list_exceptions` |
+| `admin` | sync, trigger, status, health | `trigger_manual_sync`, `get_system_health` |
+
+Always-on tools (included regardless of intent): `initialize_session`, `list_systems`.
+
+### How to add a new tool
+
+1. Implement the tool in `mcp/mcp_server.py` and add it to the `TOOLS` list.
+2. Open `utils/tool_router.py`.
+3. Add the tool name to the `tools` list of the most relevant existing intent group, OR create a new group:
+   ```python
+   "my_new_group": {
+       "keywords": ["keyword1", "keyword2"],
+       "tools": ["my_new_tool", "related_existing_tool"],
+   },
+   ```
+4. If the tool should always be available regardless of query intent, add it to the `ALWAYS_ON` list.
+5. Restart the Slack bot and MCP server.
+
+**Warning:** A tool that is not registered in `tool_router.py` will never be called by Claude, even if it is correctly registered in the MCP server. This is the most common cause of "Claude ignores my new tool" bugs.
+
+---
+
 **Document Status**: ✅ Production — Up to Date
-**Last Updated**: 2026-02-26
+**Last Updated**: 2026-02-27
 **Approvers**: Prabal Saha
 
 ---
 
-**Document Version**: 2.7.0
-**Last Updated**: 2026-02-26
+**Document Version**: 2.8.0
+**Last Updated**: 2026-02-27
 **Author**: Prabal Saha + Claude (Sonnet 4.6)
 **Branch**: `RD-1036683-billing-schedule-automation-dev`
 
 **Change Log:**
+- v2.8.0 (2026-02-27): Role risk matrix tables (sod_permission_map, role_pair_conflicts); get_role_risk_matrix tool; list_violations tool; tool_router intent routing system
 - v2.7.0 (2026-02-27): FivetranChat-style formatting (clean prose, no decorative emojis); feedback buttons simplified to 👎 👍, PARTIAL signal dropped (commit `948f495`)
 - v2.6.0 (2026-02-26): Added Phase feedback — human answer scoring via Block Kit buttons, `answer_feedback` table, LangSmith `human_rating` write-back (commit `547c187`)
 - v2.5.0 (2026-02-26): Fixed LangSmith `context_cache_hit` root-run tagging (commit `424fcf7`, 2026-02-25) — metadata moved from child `call_mcp_tool` span to root `slack_compliance_query` run via `threading.local()`; 50-call concurrent load test: 0 real MCP API calls, 50 Redis hits (warm cache)

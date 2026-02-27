@@ -1,8 +1,8 @@
 # Slack Bot Integration Guide
 
 **Project**: SOD Compliance System - Slack Integration
-**Date**: 2026-02-25
-**Version**: 3.1
+**Date**: 2026-02-27
+**Version**: 3.2
 
 ---
 
@@ -75,7 +75,156 @@ python slack_bot_local.py
 
 ---
 
-## 🔭 NEW: LangSmith Observability + ChatAnthropic Migration (Feb 2026)
+## NEW: Role Risk Matrix, list_violations, Tool Router + Agent Fixes (Feb 2026)
+
+### `get_role_risk_matrix` — Precomputed SOD Conflict Matrix
+
+A new MCP tool returns a precomputed conflict matrix covering all 17 Fivetran custom roles.
+
+**Coverage:**
+- 153 cross-role pairs (all unique role-A × role-B combinations)
+- 17 intra-role combinations (permissions that conflict within a single role)
+
+**Underlying data model:**
+
+| Table | Purpose |
+|---|---|
+| `sod_permission_map` | Maps abstract permission names to NetSuite permission names |
+| `role_pair_conflicts` | 443 rows of pairwise conflict records |
+
+The level hierarchy used when comparing permissions is: `None < View < Create < Edit < Full`.
+
+**Analysis job:** `scripts/build_role_risk_matrix.py` — reads `sod_permission_map` and `role_pair_conflicts`, computes the matrix, and populates the cache.
+
+**Caching:** Results are cached 24 h in Redis under the standard `mcp:{tool_name}:{md5(arguments)}` key scheme.
+
+**Typical use:**
+
+```
+User: "What are the highest-risk Fivetran role combinations overall?"
+→ Bot routes to get_role_risk_matrix (not violation_query)
+→ Returns ranked matrix of all 153 cross-role pairs
+```
+
+---
+
+### `list_violations` — Filtered Violation Listing
+
+A new MCP tool lists SOD violations with optional filters and two output modes.
+
+**Parameters:**
+- `department` (optional) — filter to a single department
+- `severity` (optional) — filter to a single severity level (CRITICAL / HIGH / MEDIUM / LOW)
+- `roles_only` (boolean, default `False`) — controls output mode (see below)
+
+**Output modes:**
+
+| `roles_only` | Returns |
+|---|---|
+| `True` | Unique conflicting role combinations with the count of affected users — no individual names |
+| `False` | Per-user violation details (user, roles, rule, severity) |
+
+**Deduplication:** Uses `DISTINCT ON (user_id, rule_id)` to collapse multiple scan rows for the same user-rule pair before counting or listing.
+
+**Example (roles_only=True):**
+
+```
+User: "Which role pairs have the most violations in Finance?"
+→ list_violations(department="Finance", roles_only=True)
+→ Returns: [{"roles": ["AP Clerk", "AP Approver"], "affected_users": 12}, ...]
+```
+
+---
+
+### Tool Router: `role_risk` Intent Group
+
+`utils/tool_router.py` has a new intent group named `role_risk` that routes queries about roles in isolation or combination to `get_role_risk_matrix`.
+
+**Matched query patterns:**
+- "custom roles"
+- "Fivetran roles"
+- "overall observation"
+- "in isolation or combination"
+
+**Why this was needed:** Before this change, queries phrased as role-level observations matched the `access_review + violation_query` group and never reached the new tool.
+
+**Routing table excerpt:**
+
+```python
+"role_risk": {
+    "patterns": [
+        "custom roles", "fivetran roles",
+        "overall observation", "in isolation or combination",
+    ],
+    "primary_tool": "get_role_risk_matrix",
+}
+```
+
+---
+
+### `_trim_history` Fix — Orphaned `tool_result` Crash
+
+**Problem:** When the LangChain message history grew beyond the rolling-window limit, the naive tail-slice could start on a `ToolMessage`. The Anthropic API rejects any message array whose first entry is a `tool_result` block (HTTP 400).
+
+**Fix:** After slicing, advance the start index forward until the first `HumanMessage` is found, guaranteeing a clean boundary regardless of where the slice lands.
+
+```python
+def _trim_history(messages: list, keep: int = 10) -> list:
+    sliced = messages[-keep:]
+    # Advance to the first HumanMessage to avoid orphaned tool_result blocks
+    for i, m in enumerate(sliced):
+        if isinstance(m, HumanMessage):
+            return sliced[i:]
+    return sliced
+```
+
+---
+
+### Prompt: McKinsey Partner Voice
+
+The system prompt now includes a `VOICE` section that instructs the bot to communicate as a senior McKinsey partner advising a CFO.
+
+**Behavioural guidelines in the prompt:**
+- Lead with business and control implications, not technical detail
+- Use executive language: "material control weakness", "structural remediation", "risk-ranked"
+- State conclusions first, then supporting evidence
+- Give a single direct preferred recommendation rather than a list of options
+
+**Prompt section added:**
+
+```
+## VOICE
+Communicate as a senior McKinsey partner advising a CFO.
+- Lead with business/control implications.
+- Use executive language: material control weakness, structural remediation, risk-ranked.
+- State conclusions first; evidence follows.
+- Give one direct preferred recommendation.
+```
+
+---
+
+### Language: Replace "dangerous" with "high-risk"
+
+A `LANGUAGE` section in the system prompt now bans the word "dangerous" when describing SOD violations or role assignments.
+
+**Approved substitutions:**
+- "high-risk"
+- "elevated risk"
+- "presents material control risk"
+
+**Prompt section added:**
+
+```
+## LANGUAGE
+Never use the word "dangerous". Preferred substitutions:
+- high-risk
+- elevated risk
+- presents material control risk
+```
+
+---
+
+## NEW: LangSmith Observability + ChatAnthropic Migration (Feb 2026)
 
 **Major Enhancement**: Full distributed tracing and cost observability via LangSmith, powered by a migration from the raw Anthropic SDK to LangChain's `ChatAnthropic`.
 
@@ -329,14 +478,20 @@ for turn in range(max_turns):
 ## Table of Contents
 
 1. [Quick Start: Local Development](#quick-start-local-development) ⚡ NEW
-2. [Integration Options](#integration-options)
-3. [Option 1: Slack + Claude API (Recommended)](#option-1-slack--claude-api-recommended)
-4. [Option 2: Direct Slack Integration](#option-2-direct-slack-integration)
-5. [Option 3: Slack Slash Commands](#option-3-slack-slash-commands)
-6. [Deployment Guide](#deployment-guide)
-7. [Security Considerations](#security-considerations)
-8. [Usage Examples](#usage-examples)
-9. [Cost Analysis](#cost-analysis)
+2. [NEW: Role Risk Matrix, list_violations, Tool Router + Agent Fixes (Feb 2026)](#new-role-risk-matrix-list_violations-tool-router--agent-fixes-feb-2026)
+3. [NEW: LangSmith Observability + ChatAnthropic Migration (Feb 2026)](#new-langsmith-observability--chatanthropic-migration-feb-2026)
+4. [Memory Management — Phase A + B (Feb 2026)](#-memory-management--phase-a--b-feb-2026)
+5. [NEW: Feedback Loop — Human Answer Scoring (Feb 2026)](#-new-feedback-loop--human-answer-scoring-feb-2026)
+6. [NEW: DM Conversation Context (Feb 2026)](#-new-dm-conversation-context-feb-2026)
+7. [NEW: Multi-Turn Agentic Tool Use (Feb 2026)](#-new-multi-turn-agentic-tool-use-feb-2026)
+8. [Integration Options](#integration-options)
+9. [Option 1: Slack + Claude API (Recommended)](#option-1-slack--claude-api-recommended)
+10. [Option 2: Direct Slack Integration](#option-2-direct-slack-integration)
+11. [Option 3: Slack Slash Commands](#option-3-slack-slash-commands)
+12. [Deployment Guide](#deployment-guide)
+13. [Security Considerations](#security-considerations)
+14. [Usage Examples](#usage-examples)
+15. [Cost Analysis](#cost-analysis)
 
 ---
 
@@ -1215,12 +1370,13 @@ Your existing MCP server serves:
 ---
 
 **Change Log:**
+- v3.2 (2026-02-27): Added `get_role_risk_matrix` tool (17 roles, 153 cross-role pairs, 443 conflict rows); `list_violations` tool with department/severity filters and roles_only mode; `role_risk` intent group in `utils/tool_router.py`; `_trim_history` fix for orphaned tool_result crash; McKinsey partner voice section in system prompt; LANGUAGE section banning "dangerous" in favour of "high-risk" / "elevated risk" / "presents material control risk"
 - v3.1 (2026-02-27): FivetranChat-style formatting (clean prose, no emojis); feedback buttons simplified to 👎 👍 (dropped PARTIAL)
 - v3.0 (2026-02-26): Added feedback loop section — Block Kit buttons, `answer_feedback` table, LangSmith `human_rating` write-back, Redis cache bust on NEGATIVE
 - v2.0 (2026-02-25): Added Phase A Redis MCP cache and Phase B conversation summarization; DM thread_history fix
 
 ---
 
-**Document Version:** 3.1
-**Last Updated:** 2026-02-22 (ChatAnthropic migration, LangSmith tracing, DM conversation context)
+**Document Version:** 3.2
+**Last Updated:** 2026-02-27
 **Maintained By:** DevOps Team

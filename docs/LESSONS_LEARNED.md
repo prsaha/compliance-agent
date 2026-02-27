@@ -5892,12 +5892,108 @@ For feedback UI in Slack, emoji-only buttons are less visually noisy than text l
 
 ---
 
-**Document Version:** 2.2
-**Last Updated:** 2026-02-27 (Added Issue #40: emoji-only feedback buttons UX)
+### Issue #41: `list_violations` used instead of `get_role_risk_matrix` for role-risk queries
+
+**Date:** 2026-02-27
+**Severity:** Medium (incorrect/incomplete answers)
+
+**Symptom:**
+Bot answered "Fivetran-Controller is the only risky role" when asked "which Fivetran roles have conflicts in isolation or combination?"
+
+**Root cause:**
+`list_violations` only surfaces role combinations found in actual user assignments. `get_role_risk_matrix` covers all 17 roles × 153 pairs regardless of user assignments. The system prompt said "prefer" `get_role_risk_matrix` which was too soft — Claude chose the familiar tool.
+
+**Fix:**
+Replaced soft "prefer" with hard decision tree in system prompt: "ALWAYS call `get_role_risk_matrix`, NEVER call `list_violations` for role-risk questions." Also added `role_risk` intent group to `utils/tool_router.py` so the tool is always in scope for these queries.
+
+**Lesson:**
+"prefer X over Y" in a system prompt is not a reliable routing instruction when both tools exist in scope. Use explicit prohibitions ("NEVER call Y for this question type").
+
+---
+
+### Issue #42: `_trim_history` producing orphaned `tool_result` blocks (Anthropic API 400)
+
+**Date:** 2026-02-27
+**Severity:** High (API error, bot unresponsive on multi-tool queries)
+
+**Symptom:**
+Bot returned "Error code: 400 — unexpected tool_use_id found in tool_result blocks" on multi-tool queries.
+
+**Root cause:**
+`_trim_history` did a naive `messages[-(MAX_HISTORY_TURNS*2):]` tail-slice. If the slice boundary fell mid-tool-exchange, the `AIMessage` containing `tool_calls` was cut while the `ToolMessage` referencing its ID remained. Anthropic API requires every `tool_result` to have a matching `tool_use` in the immediately preceding assistant message.
+
+**Fix:**
+After the tail-slice, advance forward to the first `HumanMessage` before returning. `HumanMessage`s are always clean conversation-turn boundaries with no `tool_use` dependencies.
+
+Secondary bug: `isinstance(m, HumanMessage)` raised `NameError` because `HumanMessage` was only imported inside `process_with_claude`. Fixed with a lazy import inside `_trim_history`.
+
+```python
+# After tail-slice, walk forward to the first HumanMessage
+for i, m in enumerate(messages):
+    from langchain_core.messages import HumanMessage
+    if isinstance(m, HumanMessage):
+        return messages[i:]
+return messages
+```
+
+**Lesson:**
+When trimming LangChain message history, NEVER slice at an arbitrary byte/message boundary. Always trim at `HumanMessage` boundaries to preserve `tool_use` / `tool_result` pairing.
+
+---
+
+### Issue #43: Role risk matrix tool not included in tool router scope
+
+**Date:** 2026-02-27
+**Severity:** Medium (tool silently unavailable; bot falls back to wrong tool)
+
+**Symptom:**
+Even after system prompt fix (Issue #41), bot called `get_role_conflicts` per-role instead of `get_role_risk_matrix` for "what is your overall observation about all Fivetran roles?"
+
+**Root cause:**
+`utils/tool_router.py` classified the query as `access_review + violation_query` intents. Neither intent group included `get_role_risk_matrix`. Tool router pre-filters tools before Claude sees them, so Claude could never call a tool not in the filtered set.
+
+**Fix:**
+Added `role_risk` intent group to `TOOL_GROUPS` and `INTENT_PATTERNS` in `tool_router.py` with patterns covering "custom roles", "Fivetran roles", "overall observation", "in isolation or combination", "which roles", "role risk", "role matrix".
+
+**Lesson:**
+Every new tool must be added to `utils/tool_router.py` `TOOL_GROUPS` + `INTENT_PATTERNS`. A tool that exists in the MCP server but isn't in the router is effectively invisible for queries that match existing intents.
+
+---
+
+### Issue #44: Role risk matrix `run_migrations` skipping CREATE TABLE due to comment-prefixed SQL blocks
+
+**Date:** 2026-02-27
+**Severity:** High (migration silently skips DDL; subsequent statements fail with "relation does not exist")
+
+**Symptom:**
+Migration 008 failed with "relation sod_permission_map does not exist" on the CREATE INDEX statement.
+
+**Root cause:**
+`run_migrations` split SQL on `;` then filtered with `if not stmt.startswith("--")`. The first chunk (header comments + CREATE TABLE) started with `--` comments after stripping, so the entire CREATE TABLE was silently skipped. The CREATE INDEX ran but found no table.
+
+**Fix:**
+Instead of discarding entire blocks that start with comments, strip all leading comment lines from each block and execute the remaining SQL:
+
+```python
+# Strip comment lines within each block before checking/executing
+lines = [ln for ln in raw_stmt.splitlines() if ln.strip() and not ln.strip().startswith("--")]
+stmt = "\n".join(lines).strip()
+if stmt:
+    cursor.execute(stmt)
+```
+
+**Lesson:**
+SQL files with comment headers before DDL statements cannot be naively split on `;` and filtered by `startswith("--")`. Strip comments line-by-line within each block.
+
+---
+
+**Document Version:** 2.3
+**Last Updated:** 2026-02-27 (Added Issues #41-44: tool routing, history trimming, tool router scope, SQL migration comment stripping)
 **Maintainer:** Compliance Engineering Team
 **Next Review:** After Phase C semantic catalogue implementation
 
 **Change Log:**
+- v2.3 (2026-02-27): Added Issues #41-44 — list_violations vs get_role_risk_matrix routing, _trim_history orphaned tool_result blocks, role risk matrix tool router scope, run_migrations comment-prefixed SQL block skipping
 - v2.2 (2026-02-27): Added Issue #40 — emoji-only feedback buttons UX
 - v2.1 (2026-02-26): Added Issue #39 — Slack button value 2000-char limit
 - v2.0 (2026-02-25): Added Issue #38 — context_cache_hit not appearing on root LangSmith run
