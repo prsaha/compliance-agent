@@ -607,14 +607,18 @@ def _feedback_blocks(run_id: str, user_email: str,
 
 
 def _save_feedback(signal: str, run_id: str, user_email: str, channel_id: str,
-                   message_ts: str, query: str, answer: str, tool_called: str) -> None:
+                   message_ts: str, query: str, answer: str, tool_called: str,
+                   correction: str = None) -> None:
     """
     Persist human feedback non-blocking (called via threading.Thread).
 
     1. Writes to Postgres answer_feedback table.
-    2. Posts score to LangSmith create_feedback() so it appears in Feedback tab.
-    3. On NEGATIVE: busts all get_user_violations Redis cache keys so the next
-       query makes a fresh live call and returns up-to-date data.
+       If correction is provided (Phase B modal), UPDATEs the existing row by
+       run_id rather than inserting a duplicate.
+    2. Posts score to LangSmith create_feedback().
+       If correction is provided, also posts a 'human_correction' entry with
+       the correction text as the comment.
+    3. On NEGATIVE (no correction path): busts get_user_violations Redis cache.
     """
     _SIGNAL_SCORES = {"POSITIVE": 1.0, "NEGATIVE": 0.0, "PARTIAL": 0.5, "UNCLEAR": 0.3}
 
@@ -624,19 +628,32 @@ def _save_feedback(signal: str, run_id: str, user_email: str, channel_id: str,
         if session:
             try:
                 from models.answer_feedback import AnswerFeedback
-                row = AnswerFeedback(
-                    run_id=run_id or None,
-                    user_email=user_email,
-                    channel_id=channel_id,
-                    message_ts=message_ts,
-                    query_preview=(query or "")[:200],
-                    answer_preview=(answer or "")[:200],
-                    signal=signal,
-                    tool_called=tool_called or None,
-                )
-                session.add(row)
-                session.commit()
-                logger.info(f"Saved feedback {signal} for {user_email} run={run_id}")
+                from sqlalchemy import text as sqla_text
+                if correction and run_id:
+                    # UPDATE existing row written when the button was clicked
+                    session.execute(
+                        sqla_text(
+                            "UPDATE answer_feedback SET correction = :c "
+                            "WHERE run_id = :r AND signal = 'NEGATIVE'"
+                        ),
+                        {"c": correction[:1000], "r": run_id},
+                    )
+                    session.commit()
+                    logger.info(f"Updated correction for run={run_id}")
+                else:
+                    row = AnswerFeedback(
+                        run_id=run_id or None,
+                        user_email=user_email,
+                        channel_id=channel_id,
+                        message_ts=message_ts,
+                        query_preview=(query or "")[:200],
+                        answer_preview=(answer or "")[:200],
+                        signal=signal,
+                        tool_called=tool_called or None,
+                    )
+                    session.add(row)
+                    session.commit()
+                    logger.info(f"Saved feedback {signal} for {user_email} run={run_id}")
             except Exception as e:
                 session.rollback()
                 logger.warning(f"Could not save answer feedback: {e}")
@@ -650,18 +667,28 @@ def _save_feedback(signal: str, run_id: str, user_email: str, channel_id: str,
         try:
             ls = _get_langsmith_client()
             if ls:
-                ls.create_feedback(
-                    run_id=run_id,
-                    key="human_rating",
-                    score=_SIGNAL_SCORES.get(signal, 0.3),
-                    comment=f"Slack feedback: {signal}",
-                )
-                logger.info(f"LangSmith feedback posted: {signal} → {_SIGNAL_SCORES.get(signal)}")
+                if correction:
+                    # Write correction as a separate human_correction entry
+                    ls.create_feedback(
+                        run_id=run_id,
+                        key="human_correction",
+                        score=0.0,
+                        comment=correction[:1000],
+                    )
+                    logger.info(f"LangSmith correction posted for run={run_id}")
+                else:
+                    ls.create_feedback(
+                        run_id=run_id,
+                        key="human_rating",
+                        score=_SIGNAL_SCORES.get(signal, 0.3),
+                        comment=f"Slack feedback: {signal}",
+                    )
+                    logger.info(f"LangSmith feedback posted: {signal} → {_SIGNAL_SCORES.get(signal)}")
         except Exception as e:
             logger.warning(f"LangSmith feedback write failed: {e}")
 
-    # 3. Redis cache bust on NEGATIVE
-    if signal == "NEGATIVE":
+    # 3. Redis cache bust on NEGATIVE (only on initial signal, not correction update)
+    if signal == "NEGATIVE" and not correction:
         try:
             r = _get_redis()
             if r:
@@ -680,7 +707,7 @@ def _replace_feedback_block_with_confirmation(client, body: dict, signal: str) -
     """
     _CONFIRMATIONS = {
         "POSITIVE": "✅  Got it — marked as correct. Thanks!",
-        "NEGATIVE": "❌  Got it — marked as wrong. Cache cleared, next query will re-fetch live data.",
+        "NEGATIVE": "❌  Marked as incorrect. A correction form has opened — please describe the right answer.",
         "PARTIAL":  "🔧  Got it — marked as partial. Thanks for the signal.",
         "UNCLEAR":  "❓  Got it — marked as unclear.",
     }
@@ -1232,10 +1259,13 @@ def handle_dm(event, say, client):
 @app.action(re.compile("^feedback_(positive|negative)$"))
 def handle_feedback(ack, body, client):
     """
-    Handle ✅ / ❌ / 🔧 button clicks appended to every bot response.
+    Handle 👍 / 👎 button clicks appended to every bot response.
 
-    Acks immediately (Slack requires < 3s), then dispatches a non-blocking
-    thread to write to Postgres + LangSmith and optionally bust Redis cache.
+    👍 (POSITIVE): saves immediately + replaces buttons with confirmation.
+    👎 (NEGATIVE): saves the signal immediately (so it's recorded even if the
+        user skips the modal), then opens a correction modal asking "What went
+        wrong?" — trigger_id is only valid for 3s so views_open is called
+        synchronously before any async work.
     """
     ack()
     try:
@@ -1248,16 +1278,108 @@ def handle_feedback(ack, body, client):
         channel  = body["container"]["channel_id"]
         msg_ts   = body["container"]["message_ts"]
 
+        # Always persist the signal immediately (correction added later if modal submitted)
         threading.Thread(
             target=_save_feedback,
             args=(signal, run_id, user_email, channel, msg_ts, query, answer, tool_called),
             daemon=True,
         ).start()
 
+        if signal == "NEGATIVE":
+            # Open correction modal — private_metadata carries all context needed
+            # by the view submission handler (channel + msg_ts to update the message)
+            private_metadata = "|".join([
+                raw_value,          # "NEGATIVE|run_id|email|query|answer|tool"
+                channel,
+                msg_ts,
+            ])
+            try:
+                client.views_open(
+                    trigger_id=body["trigger_id"],
+                    view={
+                        "type": "modal",
+                        "callback_id": "feedback_correction_modal",
+                        "private_metadata": private_metadata,
+                        "title": {"type": "plain_text", "text": "What went wrong?"},
+                        "submit": {"type": "plain_text", "text": "Submit"},
+                        "close":  {"type": "plain_text", "text": "Skip"},
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": (
+                                        f"*Your question:* _{query[:120]}_\n\n"
+                                        "Help improve future answers by describing "
+                                        "what the correct response should have been."
+                                    ),
+                                },
+                            },
+                            {
+                                "type": "input",
+                                "block_id": "correction_block",
+                                "label": {"type": "plain_text", "text": "What was the correct answer?"},
+                                "element": {
+                                    "type": "plain_text_input",
+                                    "action_id": "correction_input",
+                                    "multiline": True,
+                                    "placeholder": {
+                                        "type": "plain_text",
+                                        "text": "Describe what the correct answer should have been...",
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"Could not open correction modal: {e}")
+
         _replace_feedback_block_with_confirmation(client, body, signal)
 
     except Exception as e:
         logger.error(f"Feedback action handler error: {e}")
+
+
+@app.view("feedback_correction_modal")
+def handle_correction_modal(ack, body, view):
+    """
+    Handle submission of the Phase B correction modal.
+
+    Recovers the original button payload from private_metadata, extracts the
+    correction text, and calls _save_feedback with correction= so the DB row
+    is updated and LangSmith receives a human_correction entry.
+    """
+    ack()
+    try:
+        correction = (
+            view["state"]["values"]
+            .get("correction_block", {})
+            .get("correction_input", {})
+            .get("value") or ""
+        ).strip()
+
+        if not correction:
+            return  # User submitted empty — nothing to record
+
+        # private_metadata = "SIGNAL|run_id|email|query|answer|tool|channel|msg_ts"
+        metadata = view.get("private_metadata", "")
+        parts = metadata.split("|", 7)
+        if len(parts) < 8:
+            parts += [""] * (8 - len(parts))
+        signal, run_id, user_email, query, answer, tool_called, channel, msg_ts = parts
+
+        threading.Thread(
+            target=_save_feedback,
+            args=(signal, run_id, user_email, channel, msg_ts, query, answer, tool_called),
+            kwargs={"correction": correction},
+            daemon=True,
+        ).start()
+
+        logger.info(f"Correction submitted by {user_email} for run={run_id}: {correction[:60]}")
+
+    except Exception as e:
+        logger.error(f"Correction modal handler error: {e}")
 
 
 @app.command("/compliance")

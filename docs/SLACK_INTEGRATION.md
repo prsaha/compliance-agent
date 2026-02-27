@@ -391,6 +391,122 @@ Migration: `database/migrations/007_add_answer_feedback.sql`
 
 ---
 
+### Phase B: Correction Modal on 👎
+
+When a user clicks 👎, instead of saving the NEGATIVE signal immediately, the bot opens a Slack modal asking for the correct answer. If the user submits the modal, the correction is recorded alongside the NEGATIVE signal. If the user closes the modal (Skip), the NEGATIVE signal is still recorded — just without a correction text.
+
+**👍 is unchanged** — clicking 👍 saves the POSITIVE signal immediately and replaces the buttons with a confirmation line, exactly as before.
+
+#### Modal structure
+
+- **Title:** "What went wrong?"
+- **Input block:** multi-line plain-text input, label "What was the correct answer?", `action_id="correction_input"`, optional (user can dismiss without typing)
+- **`callback_id`:** `"feedback_correction_modal"`
+
+#### How private_metadata carries context
+
+Slack modal views have no direct reference to the message or channel that triggered them. The action handler encodes all necessary context into the view's `private_metadata` field before calling `client.views_open()`:
+
+```
+private_metadata = "<original_button_value>|<channel_id>|<msg_ts>"
+```
+
+where `<original_button_value>` is the pipe-separated payload already present on the button: `signal|run_id|email|query_preview|answer_preview|tool_called`.
+
+The full string is approximately 360 characters — well within Slack's 3000-character `private_metadata` limit.
+
+#### Action handler (on 👎 click)
+
+```python
+@app.action(re.compile("^feedback_(positive|negative)$"))
+def handle_feedback(ack, body, client):
+    ack()
+    signal = ...  # parsed from action_id
+    if signal == "NEGATIVE":
+        payload = body["actions"][0]["value"]
+        channel_id = body["container"]["channel_id"]
+        msg_ts = body["container"]["message_ts"]
+        client.views_open(
+            trigger_id=body["trigger_id"],  # valid for 3 seconds only
+            view={
+                "type": "modal",
+                "callback_id": "feedback_correction_modal",
+                "private_metadata": f"{payload}|{channel_id}|{msg_ts}",
+                "title": {"type": "plain_text", "text": "What went wrong?"},
+                "submit": {"type": "plain_text", "text": "Submit"},
+                "close": {"type": "plain_text", "text": "Skip"},
+                "blocks": [{
+                    "type": "input",
+                    "optional": True,
+                    "block_id": "correction_block",
+                    "label": {"type": "plain_text", "text": "What was the correct answer?"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "correction_input",
+                        "multiline": True,
+                    },
+                }],
+            },
+        )
+        # No _save_feedback() call here — deferred to view handler
+    else:
+        # POSITIVE: save immediately (unchanged behaviour)
+        threading.Thread(target=_save_feedback, kwargs={...}).start()
+        _replace_feedback_block_with_confirmation(client, body)
+```
+
+Note: `trigger_id` expires after 3 seconds. `client.views_open()` must be called synchronously in the action handler, before any async or blocking work.
+
+#### View submission handler
+
+```python
+@app.view("feedback_correction_modal")
+def handle_correction_modal(ack, body, client):
+    ack()
+    meta = body["view"]["private_metadata"]
+    *payload_parts, channel_id, msg_ts = meta.split("|")
+    signal, run_id, email, query_preview, answer_preview, tool_called = payload_parts
+
+    correction = (
+        body["view"]["state"]["values"]
+        .get("correction_block", {})
+        .get("correction_input", {})
+        .get("value")  # None if user skipped
+    )
+
+    threading.Thread(
+        target=_save_feedback,
+        kwargs=dict(
+            signal=signal, run_id=run_id, user_email=email,
+            channel_id=channel_id, msg_ts=msg_ts,
+            query_preview=query_preview, answer_preview=answer_preview,
+            tool_called=tool_called, correction=correction,
+        ),
+    ).start()
+```
+
+When the user clicks "Skip" (close button), Slack does **not** fire the `view` event — the modal simply closes and the NEGATIVE signal is recorded without a correction on the next time the user interacts, unless the original action handler also queued a fallback save. In practice the action handler should enqueue a bare NEGATIVE save (no correction) immediately, which the view handler then upgrades if a correction is submitted.
+
+#### How correction flows to DB and LangSmith
+
+`_save_feedback(correction=None)` accepts an optional `correction` parameter:
+
+1. **Postgres** — writes to `answer_feedback.correction` (TEXT column, already present from migration `007`; no new migration needed).
+2. **LangSmith** — if `correction` is not None, calls:
+
+```python
+ls.create_feedback(
+    run_id=run_id,
+    key="human_correction",
+    score=0.0,
+    comment=correction,
+)
+```
+
+The `human_correction` feedback entry appears in the **Feedback** tab of the `slack_compliance_query` trace alongside the existing `human_rating` score entry.
+
+---
+
 ## 💬 NEW: DM Conversation Context (Feb 2026)
 
 The bot now maintains conversation history in **direct message channels**, not only in channel threads.
@@ -1370,6 +1486,7 @@ Your existing MCP server serves:
 ---
 
 **Change Log:**
+- v3.3 (2026-02-27): Added Phase B correction modal — 👎 opens a "What went wrong?" modal; correction stored in `answer_feedback.correction` and written to LangSmith as `human_correction` feedback; `private_metadata` carries button payload context to view handler; `trigger_id` timing note
 - v3.2 (2026-02-27): Added `get_role_risk_matrix` tool (17 roles, 153 cross-role pairs, 443 conflict rows); `list_violations` tool with department/severity filters and roles_only mode; `role_risk` intent group in `utils/tool_router.py`; `_trim_history` fix for orphaned tool_result crash; McKinsey partner voice section in system prompt; LANGUAGE section banning "dangerous" in favour of "high-risk" / "elevated risk" / "presents material control risk"
 - v3.1 (2026-02-27): FivetranChat-style formatting (clean prose, no emojis); feedback buttons simplified to 👎 👍 (dropped PARTIAL)
 - v3.0 (2026-02-26): Added feedback loop section — Block Kit buttons, `answer_feedback` table, LangSmith `human_rating` write-back, Redis cache bust on NEGATIVE
@@ -1377,6 +1494,6 @@ Your existing MCP server serves:
 
 ---
 
-**Document Version:** 3.2
+**Document Version:** 3.3
 **Last Updated:** 2026-02-27
 **Maintained By:** DevOps Team

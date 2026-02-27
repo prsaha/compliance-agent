@@ -5987,12 +5987,44 @@ SQL files with comment headers before DDL statements cannot be naively split on 
 
 ---
 
-**Document Version:** 2.3
-**Last Updated:** 2026-02-27 (Added Issues #41-44: tool routing, history trimming, tool router scope, SQL migration comment stripping)
+### Issue #45: Phase B correction modal — private_metadata carries button payload context
+
+**Date:** 2026-02-27
+**Severity:** Design (architectural pattern to follow for all future modal feedback flows)
+
+**Context:**
+Slack modal views don't have direct access to the message or channel that triggered them. When a user clicks 👎 and a modal opens, the `@app.view` handler that fires on modal submission has no native reference to the original message, channel, run_id, or any other button-level data. The only sanctioned Slack mechanism for passing context from an action handler to a view submission handler is the view's `private_metadata` field (string, max 3000 characters).
+
+**Solution:**
+On 👎 click, the full button value payload (`signal|run_id|email|query_preview|answer_preview|tool_called`) plus `channel_id` and `msg_ts` (extracted from `body["container"]`) are concatenated with `|` separators into `private_metadata` before calling `client.views_open()`. The view handler splits on `|` to recover all fields:
+
+```python
+# Action handler — pack context into private_metadata
+meta = f"{button_value}|{channel_id}|{msg_ts}"
+client.views_open(trigger_id=body["trigger_id"], view={..., "private_metadata": meta})
+
+# View handler — unpack
+*payload_parts, channel_id, msg_ts = body["view"]["private_metadata"].split("|")
+signal, run_id, email, query_preview, answer_preview, tool_called = payload_parts
+```
+
+The resulting string is approximately 360 characters (UUID + email + two 100-char previews + tool name + channel + ts), well within the 3000-character limit.
+
+**Key lesson:**
+Always use `private_metadata` to pass action context to modal submission handlers. Do not use Redis or a database lookup for this — it adds latency and a network round-trip for data that is already available in the action payload. The payload is small and self-contained.
+
+**Secondary lesson:**
+`trigger_id` from the action body is only valid for 3 seconds. `client.views_open()` must be called synchronously inside the action handler, before any async work, DB writes, or thread dispatches. Deferring the call (e.g., inside a `threading.Thread`) will cause a `trigger_id expired` error from Slack.
+
+---
+
+**Document Version:** 2.4
+**Last Updated:** 2026-02-27 (Added Issue #45: Phase B correction modal private_metadata pattern)
 **Maintainer:** Compliance Engineering Team
 **Next Review:** After Phase C semantic catalogue implementation
 
 **Change Log:**
+- v2.4 (2026-02-27): Added Issue #45 — Phase B correction modal private_metadata carries button payload context; trigger_id 3-second expiry
 - v2.3 (2026-02-27): Added Issues #41-44 — list_violations vs get_role_risk_matrix routing, _trim_history orphaned tool_result blocks, role risk matrix tool router scope, run_migrations comment-prefixed SQL block skipping
 - v2.2 (2026-02-27): Added Issue #40 — emoji-only feedback buttons UX
 - v2.1 (2026-02-26): Added Issue #39 — Slack button value 2000-char limit
