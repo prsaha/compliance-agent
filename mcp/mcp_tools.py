@@ -932,6 +932,57 @@ TOOL_SCHEMAS = {
         }
     },
 
+    "get_role_risk_matrix": {
+        "description": (
+            "Returns the precomputed SOD conflict matrix for Fivetran NetSuite roles. "
+            "Use this tool for questions like: 'which Fivetran roles are dangerous?', "
+            "'which role combinations trigger SOD conflicts?', 'is it safe to combine role X with role Y?', "
+            "'show me intra-role conflicts', 'what conflicts does Fivetran-Controller have?'. "
+            "This matrix is computed from actual role permissions + levels — independent of real user assignments, "
+            "so it covers ALL 17 Fivetran roles and all 153 role pairs even if no user currently holds them. "
+            "Contrast with list_violations which only surfaces conflicts found in real user data."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "role_name": {
+                    "type": "string",
+                    "description": (
+                        "Filter to conflicts involving this role (partial, case-insensitive). "
+                        "E.g. 'Controller', 'A/P Analyst', 'Billing Manager'. "
+                        "Omit to return a summary matrix of all role pairs."
+                    )
+                },
+                "severity": {
+                    "type": "string",
+                    "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+                    "description": "Filter by conflict severity. Omit to return all severities."
+                },
+                "include_intra_role": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, includes intra-role conflicts (permissions dangerous within a single role). "
+                        "Default true."
+                    ),
+                    "default": True
+                },
+                "include_cross_role": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, includes cross-role conflicts (conflicts that emerge when two different roles "
+                        "are combined). Default true."
+                    ),
+                    "default": True
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of conflict rows to return. Default 50.",
+                    "default": 50
+                }
+            },
+            "required": []
+        }
+    },
     "list_violations": {
         "description": "List SOD violations with optional filters. Two modes: (1) roles_only=false (default) — for questions about specific people or 'who has violations', returns each affected user with name/email/department/conflicting roles. (2) roles_only=true — for questions like 'which roles have inherent conflicts?', 'which role combinations are toxic?', 'what are the dangerous role pairs?' — returns ONLY the unique conflicting role combinations grouped by severity with affected user counts, NO names or emails at all.",
         "inputSchema": {
@@ -4776,6 +4827,142 @@ async def list_violations_handler(
         return f"Error listing violations: {str(e)}"
 
 
+async def get_role_risk_matrix_handler(
+    role_name: Optional[str] = None,
+    severity: Optional[str] = None,
+    include_intra_role: bool = True,
+    include_cross_role: bool = True,
+    limit: int = 50
+) -> str:
+    """
+    Query the precomputed role×role SOD conflict matrix (role_pair_conflicts table).
+    Returns conflicts derived from actual permission+level analysis — not from real user
+    assignments — so covers all 17 Fivetran roles and all 153 pairs.
+    """
+    try:
+        logger.info(
+            f"get_role_risk_matrix: role_name={role_name!r} severity={severity!r} "
+            f"intra={include_intra_role} cross={include_cross_role} limit={limit}"
+        )
+
+        from models.database_config import DatabaseConfig
+
+        severity_filter = "AND rpc.severity = :severity" if severity else ""
+        intra_filter = ""
+        if not include_intra_role and not include_cross_role:
+            return "Both include_intra_role and include_cross_role are false — nothing to return."
+        elif not include_intra_role:
+            intra_filter = "AND rpc.is_intra_role = FALSE"
+        elif not include_cross_role:
+            intra_filter = "AND rpc.is_intra_role = TRUE"
+
+        role_filter = ""
+        if role_name:
+            role_filter = "AND (LOWER(rpc.role_a_name) LIKE :role_pat OR LOWER(rpc.role_b_name) LIKE :role_pat)"
+
+        sql = text(f"""
+            SELECT
+                rpc.role_a_name,
+                rpc.role_b_name,
+                rpc.is_intra_role,
+                rpc.severity,
+                rpc.rule_name,
+                rpc.role_a_permission,
+                rpc.role_a_level,
+                rpc.role_b_permission,
+                rpc.role_b_level,
+                rpc.conflict_description
+            FROM role_pair_conflicts rpc
+            WHERE 1=1
+              {severity_filter}
+              {intra_filter}
+              {role_filter}
+            ORDER BY
+                CASE rpc.severity
+                    WHEN 'CRITICAL' THEN 1
+                    WHEN 'HIGH'     THEN 2
+                    WHEN 'MEDIUM'   THEN 3
+                    WHEN 'LOW'      THEN 4
+                    ELSE 5
+                END,
+                rpc.role_a_name,
+                rpc.role_b_name,
+                rpc.rule_name
+            LIMIT :limit
+        """)
+
+        params: dict = {"limit": limit}
+        if severity:
+            params["severity"] = severity
+        if role_name:
+            params["role_pat"] = f"%{role_name.lower()}%"
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+        rows = session.execute(sql, params).fetchall()
+
+        if not rows:
+            msg = "No conflicts found"
+            if role_name:
+                msg += f" for role matching '{role_name}'"
+            if severity:
+                msg += f" at severity {severity}"
+            return msg + "."
+
+        # ── Group into summary blocks ─────────────────────────────────────────
+        from collections import defaultdict
+        pair_map: dict = defaultdict(list)
+        for r in rows:
+            key = (r.role_a_name, r.role_b_name, r.is_intra_role, r.severity)
+            pair_map[key].append(r)
+
+        lines = []
+        lines.append(f"Role Risk Matrix — {len(rows)} conflict row(s) across {len(pair_map)} pair/severity group(s)\n")
+
+        current_severity = None
+        for (ra, rb, intra, sev), group_rows in sorted(
+            pair_map.items(),
+            key=lambda kv: (
+                {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 3, "LOW": 4}.get(kv[0][3], 5),
+                kv[0][0], kv[0][1]
+            )
+        ):
+            if sev != current_severity:
+                lines.append(f"\n{'─'*60}")
+                lines.append(f"  {sev} conflicts")
+                lines.append(f"{'─'*60}")
+                current_severity = sev
+
+            pair_type = "Intra-role" if intra else "Cross-role"
+            if intra:
+                lines.append(f"\n  [{pair_type}] {ra}")
+            else:
+                lines.append(f"\n  [{pair_type}] {ra}  +  {rb}")
+
+            for gr in group_rows:
+                if intra:
+                    lines.append(
+                        f"    • {gr.rule_name}: "
+                        f"{gr.role_a_permission} ({gr.role_a_level})"
+                        f"  ↔  {gr.role_b_permission} ({gr.role_b_level})"
+                    )
+                else:
+                    lines.append(
+                        f"    • {gr.rule_name}: "
+                        f"{gr.role_a_permission} ({gr.role_a_level})"
+                        f"  ×  {gr.role_b_permission} ({gr.role_b_level})"
+                    )
+
+        if len(rows) == limit:
+            lines.append(f"\n(Showing first {limit} rows — use a role_name filter or increase limit for more)")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"Error in get_role_risk_matrix_handler: {str(e)}", exc_info=True)
+        return f"Error querying role risk matrix: {str(e)}"
+
+
 # ============================================================================
 # TOOL REGISTRY
 # ============================================================================
@@ -4821,6 +5008,8 @@ TOOL_HANDLERS = {
     # Violation Reporting
     "generate_violation_report": generate_violation_report_handler,
     "list_violations": list_violations_handler,
+    # Role Risk Matrix
+    "get_role_risk_matrix": get_role_risk_matrix_handler,
 }
 
 

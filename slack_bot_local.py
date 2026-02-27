@@ -83,6 +83,7 @@ _MCP_CACHE_TTL = {
     "get_user_violations":      3600,   # 1 hour
     "get_violation_stats":      1800,   # 30 min
     "get_role_conflicts":       86400,  # 24 hours
+    "get_role_risk_matrix":     86400,  # 24 hours (matrix only changes after a sync + rebuild)
     "analyze_access_request":   3600,   # 1 hour
     "initialize_session":       300,    # 5 min
     "list_systems":             3600,
@@ -795,7 +796,13 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
             "DATA GROUNDING — always query MCP tools before answering any compliance question. "
             "Never generate SOD rules, control recommendations, violation counts, role lists, or risk scores from general knowledge. "
             "If asked what rules are active, call list_sod_rules. "
-            "If asked WHICH ROLES or ROLE COMBINATIONS have inherent conflicts or are toxic (e.g. 'which roles introduce conflicts?', 'what role pairs are dangerous?', 'which NetSuite roles conflict with each other?') — call list_violations(roles_only=True). This returns only the role patterns and conflict names with affected user counts. No names appear. "
+            "ROLE RISK MATRIX — use get_role_risk_matrix when the question is about whether Fivetran roles are inherently risky or what conflicts exist between them — "
+            "regardless of who currently holds those roles. Examples: 'which Fivetran roles have internal conflicts?', 'is it safe to combine AP Analyst with Controller?', "
+            "'what are the most dangerous Fivetran role pairs?', 'does the Billing Manager role have intra-role SOD issues?'. "
+            "This tool queries a precomputed permission-level matrix covering all 17 Fivetran roles and all 153 pairs. "
+            "Pass role_name to filter to a specific role, severity to focus on a tier, include_intra_role/include_cross_role to narrow scope. "
+            "If asked WHICH ROLES or ROLE COMBINATIONS have inherent conflicts or are toxic (e.g. 'which roles introduce conflicts?', 'what role pairs are dangerous?', 'which NetSuite roles conflict with each other?') — "
+            "prefer get_role_risk_matrix over list_violations because the matrix is complete (not limited to actual user assignments). "
             "If asked about violations for a specific person or 'who has violations' — call list_violations(roles_only=False) or get_user_violations. "
             "If asked about violation statistics or counts only, call get_violation_stats. "
             "If asked what controls are in place, call list_sod_rules then identify gaps. "
