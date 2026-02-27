@@ -933,7 +933,7 @@ TOOL_SCHEMAS = {
     },
 
     "list_violations": {
-        "description": "List SOD violations with optional filters for department and/or severity. Use this to answer questions like 'Show me Finance violations', 'Which users have CRITICAL violations?', 'What role conflicts exist in the AP team?', or 'Which roles does Finance users have that introduce conflicts?'. Returns each violation with the user's name, email, department, conflicting role pairs, and conflicting permissions so you can identify toxic combinations without needing individual user emails first.",
+        "description": "List SOD violations with optional filters. Two modes: (1) roles_only=false (default) — for questions about specific people or 'who has violations', returns each affected user with name/email/department/conflicting roles. (2) roles_only=true — for questions like 'which roles have inherent conflicts?', 'which role combinations are toxic?', 'what are the dangerous role pairs?' — returns ONLY the unique conflicting role combinations grouped by severity with affected user counts, NO names or emails at all.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -952,9 +952,14 @@ TOOL_SCHEMAS = {
                     "description": "Filter by violation status. Defaults to OPEN (excludes resolved violations).",
                     "default": "OPEN"
                 },
+                "roles_only": {
+                    "type": "boolean",
+                    "description": "When true, returns only unique conflicting role combinations with affected user counts — no names or emails. Use this when the question is about which roles or role patterns introduce conflicts, not about specific people.",
+                    "default": False
+                },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of violations to return.",
+                    "description": "Maximum number of rows to return.",
                     "default": 25
                 }
             },
@@ -4538,23 +4543,28 @@ async def list_violations_handler(
     department: Optional[str] = None,
     severity: Optional[str] = None,
     status: str = "OPEN",
+    roles_only: bool = False,
     limit: int = 25
 ) -> str:
     """
     List SOD violations filtered by department and/or severity.
 
-    Returns each violation with the user's name, email, department,
-    conflicting role pairs, and conflicting permissions.
+    roles_only=False  — returns per-user rows (name, email, roles, conflict)
+    roles_only=True   — returns unique role-pair patterns with affected user
+                        counts only; no names or emails ever appear.
     """
     try:
         from models.database_config import DatabaseConfig
 
-        logger.info(f"list_violations: department={department!r} severity={severity!r} status={status!r} limit={limit}")
+        logger.info(
+            f"list_violations: department={department!r} severity={severity!r} "
+            f"status={status!r} roles_only={roles_only} limit={limit}"
+        )
 
         db_config = DatabaseConfig()
         session = db_config.get_session()
 
-        # Build parameterised query — join violations → users
+        # ── Shared WHERE clause fragments ──────────────────────────────────────
         params: dict = {"limit": limit}
 
         severity_filter = ""
@@ -4572,9 +4582,111 @@ async def list_violations_handler(
             status_filter = "AND v.status = :status"
             params["status"] = status.upper()
 
-        # DISTINCT ON (u.id, v.rule_id) collapses N scan-duplicate rows per
-        # user+rule into one, keeping the highest-risk instance.
-        # The outer query re-sorts the deduplicated rows by severity then risk.
+        dept_label = f" — {department}" if department else ""
+        sev_label  = f" [{severity}]" if severity else ""
+
+        # ── MODE A: roles_only — aggregate by rule, no user names ─────────────
+        if roles_only:
+            sql = text(f"""
+                SELECT
+                    v.severity,
+                    v.title                             AS rule_title,
+                    v.conflicting_roles::text           AS roles_json,
+                    v.conflicting_permissions::text     AS perms_json,
+                    MAX(v.risk_score)                   AS max_risk,
+                    COUNT(DISTINCT v.user_id)           AS affected_count
+                FROM violations v
+                JOIN users u ON u.id = v.user_id
+                WHERE 1=1
+                  {severity_filter}
+                  {department_filter}
+                  {status_filter}
+                GROUP BY v.severity, v.title, v.conflicting_roles::text, v.conflicting_permissions::text
+                ORDER BY
+                    CASE v.severity
+                        WHEN 'CRITICAL' THEN 1
+                        WHEN 'HIGH'     THEN 2
+                        WHEN 'MEDIUM'   THEN 3
+                        WHEN 'LOW'      THEN 4
+                        ELSE 5
+                    END,
+                    MAX(v.risk_score) DESC
+                LIMIT :limit
+            """)
+
+            rows = session.execute(sql, params).fetchall()
+
+            if not rows:
+                filter_str = ", ".join(
+                    x for x in [department and f"department={department!r}", severity and f"severity={severity!r}"] if x
+                ) or "no filters"
+                return f"No role conflicts found ({filter_str})."
+
+            # Deduplicate role pairs that differ only in array order
+            import json as _json
+            seen_pairs: set = set()
+            deduped = []
+            for row in rows:
+                try:
+                    roles = _json.loads(row.roles_json) if row.roles_json else []
+                except Exception:
+                    roles = []
+                key = (row.severity, row.rule_title, frozenset(roles))
+                if key not in seen_pairs:
+                    seen_pairs.add(key)
+                    deduped.append((row, roles))
+
+            by_sev: dict = {}
+            for row, roles in deduped:
+                sev = row.severity if isinstance(row.severity, str) else row.severity.value
+                by_sev.setdefault(sev, []).append((row, roles))
+
+            total = sum(len(v) for v in by_sev.values())
+            output = f"*Conflicting role patterns{dept_label}{sev_label}* — {total} unique pattern(s)\n\n"
+
+            severity_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+            for sev in severity_order:
+                group = by_sev.get(sev, [])
+                if not group:
+                    continue
+                output += f"*{sev}* ({len(group)})\n"
+                for row, roles in group:
+                    try:
+                        perms = _json.loads(row.perms_json) if row.perms_json else []
+                    except Exception:
+                        perms = []
+
+                    if len(roles) >= 2:
+                        role_str = " ↔ ".join(f"`{r}`" for r in roles[:2])
+                        if len(roles) > 2:
+                            role_str += f" (+ {len(roles) - 2} more)"
+                    elif len(roles) == 1:
+                        role_str = f"`{roles[0]}`"
+                    else:
+                        role_str = "—"
+
+                    if len(perms) >= 2:
+                        perm_str = f"{perms[0]} ↔ {perms[1]}"
+                    elif len(perms) == 1:
+                        perm_str = perms[0]
+                    else:
+                        perm_str = "—"
+
+                    count = row.affected_count
+                    user_note = f"{count} affected user" + ("s" if count != 1 else "")
+                    output += (
+                        f"• *{row.rule_title}*\n"
+                        f"  Roles: {role_str}\n"
+                        f"  Conflict: {perm_str}\n"
+                        f"  {user_note}\n"
+                    )
+                output += "\n"
+
+            return output.rstrip()
+
+        # ── MODE B: per-user rows ──────────────────────────────────────────────
+        # DISTINCT ON (u.id, v.rule_id) collapses scan-duplicate rows,
+        # keeping the highest-risk instance per user+rule.
         sql = text(f"""
             SELECT *
             FROM (
@@ -4612,23 +4724,16 @@ async def list_violations_handler(
         rows = session.execute(sql, params).fetchall()
 
         if not rows:
-            filters = []
-            if department:
-                filters.append(f"department={department!r}")
-            if severity:
-                filters.append(f"severity={severity!r}")
-            filter_str = ", ".join(filters) if filters else "no filters"
+            filter_str = ", ".join(
+                x for x in [department and f"department={department!r}", severity and f"severity={severity!r}"] if x
+            ) or "no filters"
             return f"No violations found ({filter_str})."
 
-        # Group by severity for a clean summary
         by_severity: dict = {}
         for row in rows:
             sev = row.severity if isinstance(row.severity, str) else row.severity.value
             by_severity.setdefault(sev, []).append(row)
 
-        # Build header line
-        dept_label = f" — {department}" if department else ""
-        sev_label  = f" [{severity}]" if severity else ""
         output = f"*SOD Violations{dept_label}{sev_label}* — {len(rows)} result(s)\n\n"
 
         severity_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
@@ -4641,7 +4746,6 @@ async def list_violations_handler(
                 roles = row.conflicting_roles or []
                 perms = row.conflicting_permissions or []
 
-                # Friendly role pair string
                 if isinstance(roles, list) and len(roles) >= 2:
                     role_str = f"`{roles[0]}` ↔ `{roles[1]}`"
                 elif isinstance(roles, list) and len(roles) == 1:
@@ -4649,7 +4753,6 @@ async def list_violations_handler(
                 else:
                     role_str = str(roles) if roles else "—"
 
-                # Friendly permission pair string
                 if isinstance(perms, list) and len(perms) >= 2:
                     perm_str = f"{perms[0]} ↔ {perms[1]}"
                 elif isinstance(perms, list) and len(perms) == 1:
