@@ -461,15 +461,28 @@ def _sanitize_tool_output(tool_name: str, raw_output: str) -> str:
     return trimmed + f"\n\n[Output truncated — {len(raw_output) - TOOL_OUTPUT_MAX_CHARS} chars omitted]"
 
 
-def _trim_history(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _trim_history(messages: List) -> List:
     """
     Keep at most MAX_HISTORY_TURNS turn-pairs (user + assistant) to cap context growth.
-    Always preserves the first user message (turn 0).
+
+    CRITICAL: Never start the trimmed slice on a ToolMessage or an AIMessage whose
+    tool_calls have been cut off. The Anthropic API requires every tool_result block
+    to have a matching tool_use in the immediately preceding assistant message.
+
+    Strategy: take the last MAX_HISTORY_TURNS*2 messages as a candidate slice, then
+    advance forward to the first HumanMessage — that is always a safe starting point.
+    If no HumanMessage is found (edge case: pure tool-exchange history), fall back to
+    the full list rather than risking an orphaned tool_result.
     """
     if len(messages) <= MAX_HISTORY_TURNS * 2:
         return messages
-    # Keep the last MAX_HISTORY_TURNS * 2 messages
-    return messages[-(MAX_HISTORY_TURNS * 2):]
+    candidate = messages[-(MAX_HISTORY_TURNS * 2):]
+    # Advance to the first HumanMessage to avoid orphaned tool_result blocks
+    for i, m in enumerate(candidate):
+        if isinstance(m, HumanMessage):
+            return candidate[i:]
+    # Fallback: can't find a clean HumanMessage boundary — return full list
+    return messages
 
 
 def _compress_tool_result(tool_name: str, content: str, llm) -> str:
