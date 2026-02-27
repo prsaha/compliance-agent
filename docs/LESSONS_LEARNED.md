@@ -6018,12 +6018,87 @@ Always use `private_metadata` to pass action context to modal submission handler
 
 ---
 
-**Document Version:** 2.4
-**Last Updated:** 2026-02-27 (Added Issue #45: Phase B correction modal private_metadata pattern)
+### Issue #46: `files_upload_v2` fails silently with missing `files:write` scope
+
+**Date:** 2026-02-27
+**Severity:** Medium
+
+**Context:**
+`_upload_full_response()` was added to auto-upload long responses as Slack files. The function calls `client.files_upload_v2()` but the bot token didn't have `files:write` scope. The API returned `{'ok': False, 'error': 'missing_scope', 'needed': 'files:write'}` which was caught and logged as a WARNING, causing the fallback message to appear instead.
+
+**Solution:**
+- Added `files:write` to Slack App OAuth Scopes (api.slack.com/apps → OAuth & Permissions → Bot Token Scopes)
+- Reinstall app to workspace after adding scope
+- Fallback message updated to user-friendly: "Ask me about a specific role for the complete breakdown (e.g. 'tell me more about the Controller role')" instead of "[Response truncated]"
+
+**Key lesson:**
+Slack file upload requires `files:write` scope. Always check the `needed` field in the Slack API error response — it tells you exactly which scope is missing.
+
+**Secondary lesson:**
+Always implement a graceful fallback before wiring up a new Slack API feature. The fallback ran correctly; only the upload step failed.
+
+---
+
+### Issue #47: Claude self-identifies as "SOD compliance agent" despite updated branding
+
+**Date:** 2026-02-27
+**Severity:** Low
+
+**Context:**
+After removing "SOD compliance agent" from the capabilities template (L927), Claude still responded "I'm Fivetran's SOD compliance agent". Root cause: the persona line at L878 contained "Segregation of Duties (SOD)" — Claude associated that term with its self-description even though the template said otherwise.
+
+**Solution:**
+- Rewrote persona line to not mention "SOD" in the identity sentence
+- Added explicit prohibition: "Never refer to yourself as a 'SOD agent' or 'SOD compliance agent' — you are a 'compliance agent'"
+- Added same prohibition to the CAPABILITIES QUERY block: "NEVER use the phrase 'SOD compliance agent'"
+
+**Key lesson:**
+If you want Claude to stop using a phrase, you must explicitly prohibit it — removing the phrase from the template is not enough if it still appears elsewhere in the system prompt context.
+
+**Secondary lesson:**
+Self-description phrases are strongly influenced by the very first identity sentence. Keep the persona opening free of any labels you don't want Claude to use.
+
+---
+
+### Issue #48: System prompt response-length guidance ignored when phrased as soft limits
+
+**Date:** 2026-02-27
+**Severity:** Low
+
+**Context:**
+The initial response format instruction for `get_role_risk_matrix` said "Total Slack response must stay under 1,800 characters" — Claude consistently produced 4,000–5,000 char essays and ignored it. Similarly, "prefer concise" and "aim for" phrasing were ineffective.
+
+**Solution:**
+- Changed to "RESPONSE FORMAT — HARD LIMIT": max 3 bullets, max 1,200 chars MAXIMUM
+- Added "GLOBAL RESPONSE LENGTH" rule for all responses: max 1,800 chars, summarise 3 points if longer, never truncate mid-sentence
+- Added `MAX_SLACK_RESPONSE_CHARS = 2000` constant as a code-level safety net: if response still exceeds limit, `_trim_response_for_slack()` cuts and uploads full text as file
+
+```python
+MAX_SLACK_RESPONSE_CHARS = 2000
+
+def _trim_response_for_slack(response: str, run_id: str, channel: str, thread_ts: str) -> str:
+    if len(response) <= MAX_SLACK_RESPONSE_CHARS:
+        return response
+    trimmed = response[:MAX_SLACK_RESPONSE_CHARS].rsplit(" ", 1)[0]
+    _upload_full_response(response, run_id, channel, thread_ts)
+    return trimmed
+```
+
+**Key lesson:**
+Claude treats soft limits ("should", "aim for", "try to stay under") as suggestions. Use "MAXIMUM N characters" and "HARD LIMIT" for constraints that must be enforced.
+
+**Secondary lesson:**
+Always pair prompt-level constraints with a code-level safety net. The prompt reduces the likelihood of long responses; the code-level truncation catches the cases that slip through.
+
+---
+
+**Document Version:** 2.5
+**Last Updated:** 2026-02-27 (Added Issues #46-48: files:write scope, SOD branding prohibition, hard response-length limits)
 **Maintainer:** Compliance Engineering Team
 **Next Review:** After Phase C semantic catalogue implementation
 
 **Change Log:**
+- v2.5 (2026-02-27): Issues #46-48 added — files:write scope for Slack file upload, Claude SOD branding prohibition, hard response-length limits with code-level safety net
 - v2.4 (2026-02-27): Added Issue #45 — Phase B correction modal private_metadata carries button payload context; trigger_id 3-second expiry
 - v2.3 (2026-02-27): Added Issues #41-44 — list_violations vs get_role_risk_matrix routing, _trim_history orphaned tool_result blocks, role risk matrix tool router scope, run_migrations comment-prefixed SQL block skipping
 - v2.2 (2026-02-27): Added Issue #40 — emoji-only feedback buttons UX

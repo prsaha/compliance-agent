@@ -847,6 +847,10 @@ A: Create new connector in `connectors/`, implement `BaseConnector` interface, r
 - [x] **NEW**: `role_risk` intent group in `utils/tool_router.py` — routes role-risk queries to `get_role_risk_matrix`. (2026-02-27)
 - [x] **NEW**: McKinsey partner voice in system prompt — executive language, conclusions first, direct recommendations. (2026-02-27)
 - [x] **NEW**: `_trim_history` fix — prevents orphaned tool_result blocks (Anthropic API 400) by trimming only at HumanMessage boundaries. (2026-02-27)
+- [x] **NEW**: Response length management — `MAX_SLACK_RESPONSE_CHARS=2000`, `_trim_response_for_slack()` auto-uploads long responses via `files_upload_v2()`, user-friendly fallback when upload fails (requires `files:write` scope) (2026-02-27)
+- [x] **NEW**: Response length prompt constraints — `HARD LIMIT` for `get_role_risk_matrix` (3 bullets, 1200 chars max), `GLOBAL RESPONSE LENGTH` rule (1800 chars max for all responses) (2026-02-27)
+- [x] **NEW**: Dynamic capabilities intro — bot calls `list_systems` when asked "what can you do", lists only connected systems, describes cross-system compliance when multiple systems active (2026-02-27)
+- [x] **NEW**: Identity rebrand — removed "SOD compliance agent"; bot is now "Fivetran's compliance agent"; SOD is one capability, not the identity; explicit prohibition in system prompt (2026-02-27)
 
 ### 🚧 Known Issues
 
@@ -956,6 +960,7 @@ Priority items:
 ---
 
 **Version History:**
+- v1.7 (2026-02-27): Response length management (auto-upload + truncation); dynamic capabilities intro (list_systems-driven); identity rebrand (compliance agent, not SOD agent); HARD LIMIT prompt constraints
 - v1.6 (2026-02-27): Role risk matrix (17 roles, 153 pairs, 443 conflict rows); get_role_risk_matrix + list_violations tools; tool_router role_risk intent group; McKinsey partner voice; _trim_history API-400 fix
 - v1.5 (2026-02-27): FivetranChat-style formatting (clean prose, no emoji); feedback buttons 👎 👍 (commit 948f495)
 - v1.4 (2026-02-26): Feedback loop — Block Kit buttons, answer_feedback table, LangSmith human_rating, Redis cache bust on NEGATIVE (commit 547c187)

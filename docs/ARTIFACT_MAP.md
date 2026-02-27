@@ -743,6 +743,61 @@ Slack event handler for direct messages. Flow:
 
 Slack event handler for `@mention` in channels. Same flow as `handle_dm` but uses `fetch_thread_history()` and resolves `@mention` tokens to emails via `extract_user_mentions()`.
 
+### Constants
+
+| Constant | Type | Default | Env override | Purpose |
+|---|---|---|---|---|
+| `MAX_SLACK_RESPONSE_CHARS` | `int` | `2000` | `SLACK_MAX_RESPONSE_CHARS` | Responses longer than this threshold trigger auto-upload via `files_upload_v2()` instead of inline posting |
+
+### Helper Functions
+
+#### `_upload_full_response(client, channel, title, content)` (NEW — 2026-02-27)
+
+Uploads the full response text as a Slack file using `files_upload_v2()`. Returns the file permalink on success, or `None` on failure.
+
+**Required Slack bot scope:** `files:write`
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `client` | `WebClient` | Slack SDK client instance |
+| `channel` | `str` | Slack channel or DM channel ID to share the file into |
+| `title` | `str` | Display title for the uploaded file |
+| `content` | `str` | Full response text to upload |
+
+**Returns:** `str | None` — permalink URL of the uploaded file, or `None` if the upload fails.
+
+#### `_trim_response_for_slack(response, client, channel)` (NEW — 2026-02-27)
+
+Called immediately after `process_with_claude()` returns. If the response exceeds `MAX_SLACK_RESPONSE_CHARS`, the function finds the nearest clean boundary (sentence end or newline), uploads the full text via `_upload_full_response()`, and returns the trimmed excerpt appended with a link to the full file.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `response` | `str` | Full response string returned by `process_with_claude()` |
+| `client` | `WebClient` | Slack SDK client instance (passed through to `_upload_full_response`) |
+| `channel` | `str` | Destination channel ID (passed through to `_upload_full_response`) |
+
+**Returns:** `str` — either the original response unchanged (if within limit) or the trimmed excerpt + permalink to the full file.
+
+### System Prompt Sections (NEW — 2026-02-27)
+
+The static system prompt injected into every `process_with_claude()` call contains the following named blocks in addition to the existing McKinsey-voice and role-context blocks:
+
+#### `CAPABILITIES QUERY`
+
+Instructs Claude to call `list_systems` before answering any question of the form "what can you do" or "what systems do you cover". Active systems are derived exclusively from the ✅ entries returned by `list_systems` — Claude **never** hardcodes system names. Max block length: 800 chars.
+
+#### `GLOBAL RESPONSE LENGTH`
+
+Caps all responses at 1,800 characters. If a response would exceed this limit, Claude must instead summarise in 3 bullet points and offer to provide further detail on any specific point.
+
+#### `HARD LIMIT (get_role_risk_matrix)`
+
+When answering with data from `get_role_risk_matrix`, Claude is constrained to: max 3 bullets, max 1,200 characters total, and no permission-level detail (role names and severity only). This prevents overly verbose matrix dumps in Slack threads.
+
 ### Feature Flags
 
 | Flag | `.env` key | Default | Effect |
@@ -800,6 +855,7 @@ SLACK_MAX_TOKENS=1024
 SLACK_MAX_HISTORY_TURNS=4
 SLACK_TOOL_OUTPUT_MAX_CHARS=2000
 SLACK_ROLLING_SUMMARY_MIN_CHARS=800
+SLACK_MAX_RESPONSE_CHARS=2000        # Responses longer than this trigger auto-upload via files_upload_v2()
 
 # CORS (optional)
 MCP_ALLOWED_ORIGINS="http://localhost,http://localhost:4200"
@@ -904,7 +960,7 @@ PostgreSQL 14+ required. Enable extension: `CREATE EXTENSION IF NOT EXISTS vecto
 | Bot User OAuth Token | `SLACK_BOT_TOKEN` (`xoxb-`) | Post messages, read user profiles, read channel/DM history |
 | App-Level Token | `SLACK_APP_TOKEN` (`xapp-`) | Socket Mode WebSocket connection (replaces webhooks) |
 
-Required OAuth scopes: `chat:write`, `users:read`, `users:read.email`, `app_mentions:read`, `im:read`, `im:write`, `im:history`, `channels:history`, `reactions:write`
+Required OAuth scopes: `chat:write`, `users:read`, `users:read.email`, `app_mentions:read`, `im:read`, `im:write`, `im:history`, `channels:history`, `reactions:write`, `files:write` (required by `_upload_full_response()` for auto-upload of long responses)
 
 The bot handles: `app_mention` events → `handle_mention()`, `message.im` events → `handle_dm()`, `action` events (feedback buttons) → `handle_feedback()`.
 
