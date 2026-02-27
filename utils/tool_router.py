@@ -61,6 +61,11 @@ TOOL_GROUPS: Dict[str, List[str]] = {
         "recommend_roles_for_job_title",
         "validate_job_role",
     ],
+    "role_risk": [
+        "get_role_risk_matrix",
+        "get_role_conflicts",
+        "list_violations",
+    ],
     "reporting": [
         "get_violation_stats",
         "generate_compliance_report",
@@ -132,6 +137,19 @@ INTENT_PATTERNS: Dict[str, List[str]] = {
         r"\banalyze.*role\b",
         r"\brole conflict\b",
         r"\binside.*role\b",
+    ],
+    "role_risk": [
+        r"\ball.*roles?\b",
+        r"\bcustom roles?\b",
+        r"\bfivetran roles?\b",
+        r"\broles?.*isolation\b",
+        r"\broles?.*combination\b",
+        r"\brisky roles?\b",
+        r"\brole.*risk\b",
+        r"\brole.*matrix\b",
+        r"\bwhich roles?\b",
+        r"\boveral.*observation\b",
+        r"\bobservation.*roles?\b",
     ],
     "reporting": [
         r"\breport\b",
