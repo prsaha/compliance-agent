@@ -1,6 +1,6 @@
 # SOD Compliance Agent — Architecture & Trust Mechanisms
 
-**Version:** 1.1
+**Version:** 1.2
 **Last Updated:** 2026-02-26
 **Audience:** Engineering team presentation
 
@@ -87,7 +87,7 @@
 │  │  _save_feedback()                                                 │   │
 │  │                                                                   │   │
 │  │  1. Postgres → answer_feedback table                              │   │
-│  │     signal: POSITIVE(1.0) | NEGATIVE(0.0) | PARTIAL(0.5)         │   │
+│  │     signal: POSITIVE 👍(1.0) | NEGATIVE 👎(0.0)                   │   │
 │  │                                                                   │   │
 │  │  2. LangSmith → create_feedback(run_id, human_rating=score)       │   │
 │  │     Human score visible alongside 3 auto-evals in Feedback tab   │   │
@@ -157,10 +157,11 @@
 ║  Eval       │  3 online LangSmith evaluators fire  │  LangSmith project  ║
 ║             │  on every trace, score 0/1           │  compliance-agent   ║
 ║─────────────┼─────────────────────────────────────┼─────────────────────║
-║  Human eval │  Block Kit buttons on every response │  answer_feedback    ║
+║  Human eval │  👎 👍 buttons on every response     │  answer_feedback    ║
 ║             │  NEGATIVE busts Redis cache —        │  Postgres table     ║
 ║             │  next answer uses fresh live data    │  + LangSmith        ║
-║             │                                      │  human_rating       ║
+║  Formatting │  Clean prose, no decorative emojis,  │  system prompt      ║
+║             │  lead with answer (FivetranChat style)│  L808–818           ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
 

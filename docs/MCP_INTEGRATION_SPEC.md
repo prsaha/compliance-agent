@@ -2095,7 +2095,7 @@ LANGCHAIN_PROJECT=compliance-agent
 
 **Phase B** generates Haiku summaries of each DM exchange, stored in `conversation_summaries` table (90-day TTL). Injects 3 most recent summaries as prior context (~150 tokens vs ~2K raw). LangSmith tags: `context_summaries_injected`.
 
-**Phase feedback** appends `✅ Correct / ❌ Wrong / 🔧 Partial` Block Kit buttons to every bot response. Button clicks are handled by `@app.action("feedback_button")` — non-blocking `_save_feedback()` writes to `answer_feedback` Postgres table, posts `human_rating` score to LangSmith `create_feedback()`, and on NEGATIVE signal busts Redis violation cache (`mcp:get_user_violations:*`). Feature-flagged: `USE_ANSWER_FEEDBACK=true`.
+**Phase feedback** appends `✅ Correct / ❌ Wrong / 🔧 Partial` Block Kit buttons to every bot response. Button clicks are handled by `@app.action("feedback_button")` — non-blocking `_save_feedback()` writes to `answer_feedback` Postgres table, posts `human_rating` score to LangSmith `create_feedback()`, and on NEGATIVE signal busts Redis violation cache (`mcp:get_user_violations:*`). Feature-flagged: `USE_ANSWER_FEEDBACK=true`. Buttons display as 👎 👍 emoji (NEGATIVE/POSITIVE only; PARTIAL signal removed). System prompt updated to enforce FivetranChat-style clean prose responses — no decorative emojis, lead with answer.
 
 ---
 
@@ -2193,12 +2193,13 @@ This is the primary signal all 3 evaluators rely on for the post-v1.3 traces.
 
 ---
 
-**Document Version**: 2.6.0
+**Document Version**: 2.7.0
 **Last Updated**: 2026-02-26
 **Author**: Prabal Saha + Claude (Sonnet 4.6)
 **Branch**: `RD-1036683-billing-schedule-automation-dev`
 
 **Change Log:**
+- v2.7.0 (2026-02-27): FivetranChat-style formatting (clean prose, no decorative emojis); feedback buttons simplified to 👎 👍, PARTIAL signal dropped (commit `948f495`)
 - v2.6.0 (2026-02-26): Added Phase feedback — human answer scoring via Block Kit buttons, `answer_feedback` table, LangSmith `human_rating` write-back (commit `547c187`)
 - v2.5.0 (2026-02-26): Fixed LangSmith `context_cache_hit` root-run tagging (commit `424fcf7`, 2026-02-25) — metadata moved from child `call_mcp_tool` span to root `slack_compliance_query` run via `threading.local()`; 50-call concurrent load test: 0 real MCP API calls, 50 Redis hits (warm cache)
 - v2.4.0 (2026-02-25): Phase A Redis MCP cache (cache bust on sync), Phase B conversation summarization, paginated RESTlet blind spot fix, stale role removal fix

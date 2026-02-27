@@ -838,6 +838,7 @@ A: Create new connector in `connectors/`, implement `BaseConnector` interface, r
 - [x] **NEW**: Fixed LangSmith `context_cache_hit` root-run tagging — `threading.local()` propagates cache hit flag from child span to root trace (2026-02-26)
 - [x] **NEW**: Angular Configuration Portal Phase 1 — JWT auth, 16 admin API endpoints, Angular 17 frontend with Dashboard/Violations/Exceptions/SOD Rules/Thresholds/Feature Flags screens (2026-02-26)
 - [x] **NEW**: Feedback loop — Block Kit buttons on every response; `answer_feedback` Postgres table; LangSmith `human_rating` write-back; Redis cache bust on NEGATIVE signal (2026-02-26)
+- [x] **NEW**: FivetranChat-style formatting — clean prose responses, no decorative emojis; feedback buttons simplified to 👎 👍 (2026-02-27)
 
 ### 🚧 Known Issues
 
@@ -947,6 +948,7 @@ Priority items:
 ---
 
 **Version History:**
+- v1.5 (2026-02-27): FivetranChat-style formatting (clean prose, no emoji); feedback buttons 👎 👍 (commit 948f495)
 - v1.4 (2026-02-26): Feedback loop — Block Kit buttons, answer_feedback table, LangSmith human_rating, Redis cache bust on NEGATIVE (commit 547c187)
 - v1.3 (2026-02-26): Fixed LangSmith context_cache_hit tagging (threading.local fix); load test script added (/tmp/load_test.py)
 - v1.2 (2026-02-22): Added LangSmith observability section, ChatAnthropic migration notes, DM conversation context, updated env vars and current status

@@ -5874,12 +5874,31 @@ Always cap user-content fields before embedding them in Slack Block Kit `value` 
 
 ---
 
-**Document Version:** 2.1
-**Last Updated:** 2026-02-26 (Added Issue #39: Slack button value 2000-char limit)
+### Issue #40: Slack Block Kit buttons render best with emoji-only labels
+
+**Date:** 2026-02-27
+**Severity:** UX (non-functional)
+
+**Context:**
+The original feedback buttons used text labels: `✅  Correct`, `❌  Wrong`, `🔧  Partial`. These rendered as wide pill buttons that dominated the message visually.
+
+**Fix:**
+Simplified to two emoji-only buttons `👎` `👍` with `"emoji": true` in the `plain_text` object. This matches the compact, unobtrusive style seen in tools like FivetranChat. Also dropped the PARTIAL signal — binary POSITIVE/NEGATIVE is sufficient for initial feedback quality.
+
+**Lesson:**
+For feedback UI in Slack, emoji-only buttons are less visually noisy than text labels and align with the look-and-feel of other Fivetran Slack bots. Use `{"type": "plain_text", "text": "👍", "emoji": true}`.
+
+**Commit:** `948f495`
+
+---
+
+**Document Version:** 2.2
+**Last Updated:** 2026-02-27 (Added Issue #40: emoji-only feedback buttons UX)
 **Maintainer:** Compliance Engineering Team
 **Next Review:** After Phase C semantic catalogue implementation
 
 **Change Log:**
+- v2.2 (2026-02-27): Added Issue #40 — emoji-only feedback buttons UX
 - v2.1 (2026-02-26): Added Issue #39 — Slack button value 2000-char limit
 - v2.0 (2026-02-25): Added Issue #38 — context_cache_hit not appearing on root LangSmith run
 - v1.9 (2026-02-25): Added Issues #34-37 — Redis cache bust on sync, additive-only sync bug, paginated RESTlet role coverage gap, NetSuite propagation delay

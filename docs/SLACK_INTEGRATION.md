@@ -2,7 +2,7 @@
 
 **Project**: SOD Compliance System - Slack Integration
 **Date**: 2026-02-25
-**Version**: 3.0
+**Version**: 3.1
 
 ---
 
@@ -211,7 +211,7 @@ Every bot response now includes three Block Kit buttons appended after the answe
 
 1. `_feedback_blocks()` builds a Slack `actions` block encoding `run_id + user_email + query_preview + answer_preview + tool_called` as a pipe-separated button value.
 2. `handle_dm()` and `handle_mention()` append this block to `format_as_blocks(response)` before `client.chat_update()`.
-3. On click, `@app.action("feedback_button")` acks within 3s then dispatches `_save_feedback()` in a non-blocking `threading.Thread`.
+3. On click, `@app.action(re.compile("^feedback_(positive|negative)$"))` acks within 3s then dispatches `_save_feedback()` in a non-blocking `threading.Thread`.
 4. `_save_feedback()` writes to Postgres `answer_feedback` table, posts `human_rating` score to LangSmith `create_feedback()`, and on NEGATIVE signal deletes all `mcp:get_user_violations:*` Redis keys.
 5. `_replace_feedback_block_with_confirmation()` swaps buttons for a one-line confirmation so users cannot double-submit.
 
@@ -219,9 +219,8 @@ Every bot response now includes three Block Kit buttons appended after the answe
 
 | Button | Signal | LangSmith score | Redis side-effect |
 |---|---|---|---|
-| ✅ Correct | POSITIVE | 1.0 | — |
-| ❌ Wrong | NEGATIVE | 0.0 | Busts violation cache |
-| 🔧 Partial | PARTIAL | 0.5 | — |
+| 👍 | POSITIVE | 1.0 | — |
+| 👎 | NEGATIVE | 0.0 | Busts violation cache |
 
 ### Feature flag
 
@@ -1216,11 +1215,12 @@ Your existing MCP server serves:
 ---
 
 **Change Log:**
+- v3.1 (2026-02-27): FivetranChat-style formatting (clean prose, no emojis); feedback buttons simplified to 👎 👍 (dropped PARTIAL)
 - v3.0 (2026-02-26): Added feedback loop section — Block Kit buttons, `answer_feedback` table, LangSmith `human_rating` write-back, Redis cache bust on NEGATIVE
 - v2.0 (2026-02-25): Added Phase A Redis MCP cache and Phase B conversation summarization; DM thread_history fix
 
 ---
 
-**Document Version:** 3.0
+**Document Version:** 3.1
 **Last Updated:** 2026-02-22 (ChatAnthropic migration, LangSmith tracing, DM conversation context)
 **Maintained By:** DevOps Team
