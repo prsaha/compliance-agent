@@ -577,22 +577,15 @@ def _feedback_blocks(run_id: str, user_email: str,
         "elements": [
             {
                 "type": "button",
-                "text": {"type": "plain_text", "text": "✅  Correct"},
-                "value": f"POSITIVE|{payload}",
-                "action_id": "feedback_positive",
-            },
-            {
-                "type": "button",
-                "text": {"type": "plain_text", "text": "❌  Wrong"},
-                "style": "danger",
+                "text": {"type": "plain_text", "text": "👎", "emoji": True},
                 "value": f"NEGATIVE|{payload}",
                 "action_id": "feedback_negative",
             },
             {
                 "type": "button",
-                "text": {"type": "plain_text", "text": "🔧  Partial"},
-                "value": f"PARTIAL|{payload}",
-                "action_id": "feedback_partial",
+                "text": {"type": "plain_text", "text": "👍", "emoji": True},
+                "value": f"POSITIVE|{payload}",
+                "action_id": "feedback_positive",
             },
         ],
     }
@@ -805,17 +798,16 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
             "If asked about violations, call get_violation_stats or list_violations. "
             "If asked what controls are in place, call list_sod_rules then identify gaps. "
             "Every compliance answer must cite a tool result, not training data.\n\n"
-            "FORMATTING — you are responding inside Slack. Use Slack mrkdwn, NOT standard Markdown:\n"
-            "• Bold: *text* (single asterisk, not double)\n"
-            "• Italic: _text_\n"
-            "• Inline code: `code`\n"
-            "• Code block: ```code```\n"
-            "• Bullet list: start lines with • or -\n"
-            "• Section separator: a line containing only --- (three dashes)\n"
-            "• DO NOT use ### or ## headings — use *Bold Title* on its own line instead\n"
-            "• DO NOT use Markdown tables (| col | col |) — use bullet lists or numbered lists\n"
-            "• DO NOT use **double asterisks** — Slack ignores them\n"
-            "• Emojis are fine and encouraged for visual hierarchy"
+            "FORMATTING — write like a knowledgeable colleague sending a Slack message, not a dashboard report:\n"
+            "• Be concise. Lead with the answer, then supporting detail.\n"
+            "• Use flowing prose where possible. Avoid turning every answer into a bullet list.\n"
+            "• Use *bold* only for the single most important fact (e.g. a verdict or a name).\n"
+            "• Bullet lists are fine for genuinely enumerable items (roles, violations, steps) — keep them short.\n"
+            "• Use Slack mrkdwn syntax: *bold*, _italic_, `code`, ```code block```\n"
+            "• DO NOT use ### or ## headings.\n"
+            "• DO NOT use Markdown tables (| col | col |) — use short bullet lists instead.\n"
+            "• DO NOT use **double asterisks** — Slack ignores them.\n"
+            "• Do not use emojis. Write in plain professional text. The only exception is ⚠️ when flagging a critical SOD violation — use it once, at the start of that specific sentence."
         )
 
         # ── Dynamic context (not cached — contains per-user data) ──
@@ -1198,7 +1190,7 @@ def handle_dm(event, say, client):
         )
 
 
-@app.action(re.compile("^feedback_(positive|negative|partial)$"))
+@app.action(re.compile("^feedback_(positive|negative)$"))
 def handle_feedback(ack, body, client):
     """
     Handle ✅ / ❌ / 🔧 button clicks appended to every bot response.
