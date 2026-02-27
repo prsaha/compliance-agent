@@ -579,20 +579,20 @@ def _feedback_blocks(run_id: str, user_email: str,
                 "type": "button",
                 "text": {"type": "plain_text", "text": "✅  Correct"},
                 "value": f"POSITIVE|{payload}",
-                "action_id": "feedback_button",
+                "action_id": "feedback_positive",
             },
             {
                 "type": "button",
                 "text": {"type": "plain_text", "text": "❌  Wrong"},
                 "style": "danger",
                 "value": f"NEGATIVE|{payload}",
-                "action_id": "feedback_button",
+                "action_id": "feedback_negative",
             },
             {
                 "type": "button",
                 "text": {"type": "plain_text", "text": "🔧  Partial"},
                 "value": f"PARTIAL|{payload}",
-                "action_id": "feedback_button",
+                "action_id": "feedback_partial",
             },
         ],
     }
@@ -1198,7 +1198,7 @@ def handle_dm(event, say, client):
         )
 
 
-@app.action("feedback_button")
+@app.action(re.compile("^feedback_(positive|negative|partial)$"))
 def handle_feedback(ack, body, client):
     """
     Handle ✅ / ❌ / 🔧 button clicks appended to every bot response.
