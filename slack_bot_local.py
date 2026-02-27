@@ -50,6 +50,8 @@ MAX_HISTORY_TURNS = int(os.environ.get("SLACK_MAX_HISTORY_TURNS", "4"))
 TOOL_OUTPUT_MAX_CHARS = int(os.environ.get("SLACK_TOOL_OUTPUT_MAX_CHARS", "2000"))
 # Rolling summary: compress tool results larger than this with Haiku before storing in history
 ROLLING_SUMMARY_MIN_CHARS = int(os.environ.get("SLACK_ROLLING_SUMMARY_MIN_CHARS", "800"))
+# Responses longer than this get uploaded as a Slack file and the message shows a trimmed summary + link
+MAX_SLACK_RESPONSE_CHARS = int(os.environ.get("SLACK_MAX_RESPONSE_CHARS", "2000"))
 
 # Global variable to store MCP tools (fetched at startup)
 MCP_TOOLS: List[Dict[str, Any]] = []
@@ -606,6 +608,50 @@ def _feedback_blocks(run_id: str, user_email: str,
     }
 
 
+def _upload_full_response(client, channel: str, title: str, content: str) -> Optional[str]:
+    """
+    Upload a long response as a Slack file so the in-channel message stays concise.
+    Returns the file permalink on success, None on failure.
+    Callers should treat None as a soft failure and degrade gracefully.
+    """
+    try:
+        result = client.files_upload_v2(
+            channel=channel,
+            content=content.encode("utf-8"),
+            filename="compliance_analysis.md",
+            title=title,
+        )
+        files = result.get("files", [])
+        if files:
+            return files[0].get("permalink")
+        logger.warning("files_upload_v2 returned ok but no files list")
+    except Exception as e:
+        logger.warning(f"Slack file upload failed: {e}")
+    return None
+
+
+def _trim_response_for_slack(response: str, client, channel: str) -> str:
+    """
+    If response exceeds MAX_SLACK_RESPONSE_CHARS, upload the full text as a Slack file
+    and return a trimmed version with a link to the full analysis.
+    """
+    if len(response) <= MAX_SLACK_RESPONSE_CHARS:
+        return response
+
+    # Find a clean paragraph or line boundary near the limit
+    cutoff = response.rfind('\n\n', 0, MAX_SLACK_RESPONSE_CHARS)
+    if cutoff < MAX_SLACK_RESPONSE_CHARS // 2:
+        cutoff = response.rfind('\n', 0, MAX_SLACK_RESPONSE_CHARS)
+    if cutoff < MAX_SLACK_RESPONSE_CHARS // 2:
+        cutoff = MAX_SLACK_RESPONSE_CHARS
+
+    trimmed = response[:cutoff].rstrip()
+    permalink = _upload_full_response(client, channel, "Full Compliance Analysis", response)
+    if permalink:
+        return trimmed + f"\n\n_Full analysis →_ {permalink}"
+    return trimmed + "\n\n_[Response truncated — could not upload full analysis]_"
+
+
 def _save_feedback(signal: str, run_id: str, user_email: str, channel_id: str,
                    message_ts: str, query: str, answer: str, tool_called: str,
                    correction: str = None) -> None:
@@ -845,7 +891,10 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
             "    Call it with NO arguments to get the full overview of all 17 Fivetran roles — you do NOT need to know role names first. "
             "    get_role_risk_matrix() returns a complete precomputed matrix of all 153 role pairs and intra-role conflicts. "
             "    Only add role_name if the question is about one specific role. "
-            "    list_violations only reflects current user assignments and will miss most roles.\n"
+            "    list_violations only reflects current user assignments and will miss most roles. "
+            "    RESPONSE FORMAT for get_role_risk_matrix results: write one concise verdict sentence, then 4-5 bullet points "
+            "    covering the highest-risk roles and worst conflict patterns, then one direct recommendation. "
+            "    Total Slack response must stay under 1,800 characters — do NOT reproduce the raw matrix rows or permission-level detail.\n"
             "  • Question is about a SPECIFIC PERSON's violations or 'who currently has violations' — call get_user_violations or list_violations(roles_only=False).\n"
             "  • Question is about violation COUNTS or STATS — call get_violation_stats.\n"
             "  • Never substitute list_violations for get_role_risk_matrix for role-risk questions.\n"
@@ -1145,10 +1194,13 @@ def handle_mention(event, say, client):
             stop_event.set()
             anim_thread.join(timeout=3)
 
+        # Trim long responses — upload full text as Slack file, show concise summary inline
+        display_response = _trim_response_for_slack(response, client, channel)
+
         # Build blocks: response content + optional feedback buttons
         run_id = getattr(_cache_hit_tls, "run_id", None)
         tool_called = getattr(_cache_hit_tls, "tool", "")
-        blocks = format_as_blocks(response)
+        blocks = format_as_blocks(display_response)
         if USE_ANSWER_FEEDBACK and run_id:
             blocks.append(_feedback_blocks(run_id, user_email, message_text_clean, response, tool_called))
 
@@ -1156,7 +1208,7 @@ def handle_mention(event, say, client):
         client.chat_update(
             channel=channel,
             ts=thinking_ts,
-            text=response,
+            text=display_response,
             blocks=blocks,
         )
 
@@ -1233,10 +1285,13 @@ def handle_dm(event, say, client):
             daemon=True,
         ).start()
 
+        # Trim long responses — upload full text as Slack file, show concise summary inline
+        display_response = _trim_response_for_slack(response, client, channel)
+
         # Build blocks: response content + optional feedback buttons
         run_id = getattr(_cache_hit_tls, "run_id", None)
         tool_called = getattr(_cache_hit_tls, "tool", "")
-        blocks = format_as_blocks(response)
+        blocks = format_as_blocks(display_response)
         if USE_ANSWER_FEEDBACK and run_id:
             blocks.append(_feedback_blocks(run_id, user_email, message_text, response, tool_called))
 
@@ -1244,7 +1299,7 @@ def handle_dm(event, say, client):
         client.chat_update(
             channel=channel,
             ts=thinking_ts,
-            text=response,
+            text=display_response,
             blocks=blocks,
         )
 
