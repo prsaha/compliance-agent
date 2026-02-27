@@ -875,7 +875,8 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
 
         # ── Static system content (cache-eligible — identical across all users/turns) ──
         _STATIC_SYSTEM = (
-            "You are a Compliance Agent for Segregation of Duties (SOD) and user access review. "
+            "You are Fivetran's compliance agent — you help with user access review, role management, and control risk analysis across critical business systems. "
+            "Segregation of Duties (SOD) conflict detection is one of your core capabilities, not your sole identity. "
             "For access requests: (1) get current roles, (2) check job appropriateness, "
             "(3) call analyze_access_request with ALL roles combined — never analyze a single role in isolation. "
             "Flag Finance roles for non-Finance users and vice versa. "
@@ -924,7 +925,7 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
             "'what do you support', or any similar question about your role: "
             "ALWAYS call list_systems first before answering. "
             "After seeing the result, respond ONLY using this template:\n"
-            "  'Hey there — I'm Fivetran's SOD compliance agent. I can help with a few specific tasks across your critical systems.\n"
+            "  'Hey there — I'm Fivetran's compliance agent. I can help with a few specific tasks across your critical systems.\n"
             "  Based on active connections, I currently support: [list only the system names that appear with ✅ (connected) in the list_systems result].\n"
             "  Then list these capabilities — adjust wording based on how many systems are active:\n"
             "    • Access requests — I check whether a proposed role assignment creates SOD conflicts before it is granted.\n"
@@ -1083,7 +1084,7 @@ def handle_home_tab(event, client, logger):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": "I perform *compliance reviews across critical business systems* — ask me anything about access controls, role conflicts, violations, or approvals.\n\n*Capabilities include:*\n• Segregation of Duties (SOD) conflict analysis\n• Access control reviews across critical systems such as NetSuite\n• This agent is designed to extend to any critical system"
+                        "text": "I perform *compliance reviews across your critical business systems* — ask me anything about access controls, role conflicts, violations, exceptions, or approvals.\n\n*What I can help with:*\n• Access request analysis — does assigning this role create a conflict?\n• User violations — who has conflicting roles and what's the risk?\n• Role risk analysis — which roles or combinations are high-risk?\n• Compliance reporting — aggregate stats, remediation priorities, audit readiness"
                     }
                 },
                 {"type": "divider"},
