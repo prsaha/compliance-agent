@@ -930,6 +930,36 @@ TOOL_SCHEMAS = {
             },
             "required": ["user_email"]
         }
+    },
+
+    "list_violations": {
+        "description": "List SOD violations with optional filters for department and/or severity. Use this to answer questions like 'Show me Finance violations', 'Which users have CRITICAL violations?', 'What role conflicts exist in the AP team?', or 'Which roles does Finance users have that introduce conflicts?'. Returns each violation with the user's name, email, department, conflicting role pairs, and conflicting permissions so you can identify toxic combinations without needing individual user emails first.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "department": {
+                    "type": "string",
+                    "description": "Filter by department name (case-insensitive partial match), e.g. 'Finance', 'IT', 'Accounting'. Omit to return all departments."
+                },
+                "severity": {
+                    "type": "string",
+                    "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+                    "description": "Filter by violation severity. Omit to return all severities."
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["OPEN", "PENDING_REVIEW", "RESOLVED"],
+                    "description": "Filter by violation status. Defaults to OPEN (excludes resolved violations).",
+                    "default": "OPEN"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of violations to return.",
+                    "default": 25
+                }
+            },
+            "required": []
+        }
     }
 }
 
@@ -4504,6 +4534,145 @@ async def generate_violation_report_handler(
         return f"❌ Error generating violation report: {str(e)}"
 
 
+async def list_violations_handler(
+    department: Optional[str] = None,
+    severity: Optional[str] = None,
+    status: str = "OPEN",
+    limit: int = 25
+) -> str:
+    """
+    List SOD violations filtered by department and/or severity.
+
+    Returns each violation with the user's name, email, department,
+    conflicting role pairs, and conflicting permissions.
+    """
+    try:
+        from models.database_config import DatabaseConfig
+
+        logger.info(f"list_violations: department={department!r} severity={severity!r} status={status!r} limit={limit}")
+
+        db_config = DatabaseConfig()
+        session = db_config.get_session()
+
+        # Build parameterised query — join violations → users
+        params: dict = {"limit": limit}
+
+        severity_filter = ""
+        if severity:
+            severity_filter = "AND v.severity = :severity"
+            params["severity"] = severity.upper()
+
+        department_filter = ""
+        if department:
+            department_filter = "AND u.department ILIKE :department"
+            params["department"] = f"%{department}%"
+
+        status_filter = "AND v.status != 'RESOLVED'"
+        if status and status.upper() != "OPEN":
+            status_filter = "AND v.status = :status"
+            params["status"] = status.upper()
+
+        # DISTINCT ON (u.id, v.rule_id) collapses N scan-duplicate rows per
+        # user+rule into one, keeping the highest-risk instance.
+        # The outer query re-sorts the deduplicated rows by severity then risk.
+        sql = text(f"""
+            SELECT *
+            FROM (
+                SELECT DISTINCT ON (u.id, v.rule_id)
+                    u.name          AS user_name,
+                    u.email         AS user_email,
+                    u.department    AS department,
+                    v.severity      AS severity,
+                    v.status        AS status,
+                    v.risk_score    AS risk_score,
+                    v.title         AS title,
+                    v.conflicting_roles        AS conflicting_roles,
+                    v.conflicting_permissions  AS conflicting_permissions,
+                    v.detected_at   AS detected_at
+                FROM violations v
+                JOIN users u ON u.id = v.user_id
+                WHERE 1=1
+                  {severity_filter}
+                  {department_filter}
+                  {status_filter}
+                ORDER BY u.id, v.rule_id, v.risk_score DESC
+            ) deduped
+            ORDER BY
+                CASE severity
+                    WHEN 'CRITICAL' THEN 1
+                    WHEN 'HIGH'     THEN 2
+                    WHEN 'MEDIUM'   THEN 3
+                    WHEN 'LOW'      THEN 4
+                    ELSE 5
+                END,
+                risk_score DESC
+            LIMIT :limit
+        """)
+
+        rows = session.execute(sql, params).fetchall()
+
+        if not rows:
+            filters = []
+            if department:
+                filters.append(f"department={department!r}")
+            if severity:
+                filters.append(f"severity={severity!r}")
+            filter_str = ", ".join(filters) if filters else "no filters"
+            return f"No violations found ({filter_str})."
+
+        # Group by severity for a clean summary
+        by_severity: dict = {}
+        for row in rows:
+            sev = row.severity if isinstance(row.severity, str) else row.severity.value
+            by_severity.setdefault(sev, []).append(row)
+
+        # Build header line
+        dept_label = f" — {department}" if department else ""
+        sev_label  = f" [{severity}]" if severity else ""
+        output = f"*SOD Violations{dept_label}{sev_label}* — {len(rows)} result(s)\n\n"
+
+        severity_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+        for sev in severity_order:
+            group = by_severity.get(sev, [])
+            if not group:
+                continue
+            output += f"*{sev}* ({len(group)})\n"
+            for row in group:
+                roles = row.conflicting_roles or []
+                perms = row.conflicting_permissions or []
+
+                # Friendly role pair string
+                if isinstance(roles, list) and len(roles) >= 2:
+                    role_str = f"`{roles[0]}` ↔ `{roles[1]}`"
+                elif isinstance(roles, list) and len(roles) == 1:
+                    role_str = f"`{roles[0]}`"
+                else:
+                    role_str = str(roles) if roles else "—"
+
+                # Friendly permission pair string
+                if isinstance(perms, list) and len(perms) >= 2:
+                    perm_str = f"{perms[0]} ↔ {perms[1]}"
+                elif isinstance(perms, list) and len(perms) == 1:
+                    perm_str = perms[0]
+                else:
+                    perm_str = str(perms) if perms else "—"
+
+                dept_info = f" ({row.department})" if row.department else ""
+                output += (
+                    f"• *{row.user_name}*{dept_info} — {row.user_email}\n"
+                    f"  Roles: {role_str}\n"
+                    f"  Conflict: {perm_str}\n"
+                    f"  Risk score: {row.risk_score:.0f}\n"
+                )
+            output += "\n"
+
+        return output.rstrip()
+
+    except Exception as e:
+        logger.error(f"Error in list_violations_handler: {str(e)}", exc_info=True)
+        return f"Error listing violations: {str(e)}"
+
+
 # ============================================================================
 # TOOL REGISTRY
 # ============================================================================
@@ -4547,7 +4716,8 @@ TOOL_HANDLERS = {
     "check_my_approval_authority": check_my_approval_authority_handler,
     "request_exception_approval": request_exception_approval_handler,
     # Violation Reporting
-    "generate_violation_report": generate_violation_report_handler
+    "generate_violation_report": generate_violation_report_handler,
+    "list_violations": list_violations_handler,
 }
 
 
