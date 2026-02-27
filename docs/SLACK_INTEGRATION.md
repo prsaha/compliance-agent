@@ -1,8 +1,8 @@
 # Slack Bot Integration Guide
 
-**Project**: SOD Compliance System - Slack Integration
+**Project**: Fivetran Compliance Agent - Slack Integration
 **Date**: 2026-02-27
-**Version**: 3.2
+**Version**: 3.4
 
 ---
 
@@ -507,6 +507,178 @@ The `human_correction` feedback entry appears in the **Feedback** tab of the `sl
 
 ---
 
+## Bot Identity
+
+The bot presents itself as **Fivetran's compliance agent** — not as an "SOD compliance agent" or "SOD agent". SOD conflict detection is one capability among several; it is not the bot's defining identity.
+
+### Persona Rules
+
+- The bot is Fivetran's compliance agent. It covers access governance, SOD conflict detection, user access review, and compliance reporting across connected systems.
+- SOD conflict detection is one capability, not the identity.
+- **Prohibited phrases** (never use in responses or system prompts):
+  - "SOD agent"
+  - "SOD compliance agent"
+
+### Correct vs. Incorrect Self-Description
+
+| Incorrect | Correct |
+|---|---|
+| "I am your SOD compliance agent." | "I am Fivetran's compliance agent." |
+| "As an SOD agent, I can detect conflicts." | "I can detect SOD conflicts, review access, and report across your connected systems." |
+| "This SOD compliance agent monitors violations." | "I monitor access violations and control risks across connected systems." |
+
+### System Prompt Guidance
+
+The system prompt must open with an identity statement that positions SOD conflict detection as one of several capabilities:
+
+```
+You are Fivetran's compliance agent. You help with:
+- Access governance and user access review
+- SOD (Segregation of Duties) conflict detection
+- Cross-system compliance reporting
+- Exception management and approval workflows
+
+SOD conflict detection is one capability — not your sole identity.
+Never refer to yourself as "the SOD agent" or "SOD compliance agent".
+```
+
+---
+
+## Response Length Management
+
+Long responses from `process_with_claude()` are trimmed before posting to Slack to avoid hitting Slack's message size limits and cluttering the channel.
+
+### Configuration
+
+```bash
+# Default maximum characters for a Slack response
+MAX_SLACK_RESPONSE_CHARS = 2000
+
+# Override via environment variable
+SLACK_MAX_RESPONSE_CHARS=2000   # set in .env to change the limit
+```
+
+### `_trim_response_for_slack(client, channel, response)`
+
+Called in both `handle_dm()` and `handle_mention()` immediately after `process_with_claude()` returns, before the response is posted.
+
+**Flow:**
+
+```
+process_with_claude() returns response
+        │
+        ▼
+len(response) > MAX_SLACK_RESPONSE_CHARS?
+        │
+    Yes ─┤
+        │   Find clean \n\n paragraph boundary near the limit
+        │   Upload full text via _upload_full_response()
+        │        │
+        │    Success ──► return trimmed_text + "\n\n" + permalink
+        │        │
+        │    Failure ──► return trimmed_text + fallback_message
+        │
+    No  ──► return response unchanged
+```
+
+**Boundary detection:** When trimming, the function walks backward from `MAX_SLACK_RESPONSE_CHARS` to find the nearest `\n\n` paragraph break. This avoids cutting mid-sentence or mid-list-item.
+
+**Fallback message** (when upload fails):
+
+```
+Ask me about a specific role for the complete breakdown (e.g. 'tell me more about the Controller role')
+```
+
+### `_upload_full_response(client, channel, title, content)`
+
+Uploads the complete untruncated response as a Slack file so users can access the full text via permalink.
+
+- Calls `client.files_upload_v2(channel=channel, title=title, content=content, filename="response.txt")`
+- Requires the `files:write` OAuth scope on the bot token
+- Returns the file permalink string on success, or `None` on failure
+
+**Required OAuth scope (add to bot token scopes):**
+
+```
+files:write     # Upload files and return permalinks
+```
+
+### Feedback Buttons and Trimming
+
+`_feedback_blocks()` always encodes the **full original response** (before trimming) in the button value `answer_preview` field. This ensures that when a user clicks 👍 or 👎, the feedback record and LangSmith trace capture what Claude actually said — not the truncated Slack preview.
+
+---
+
+## Dynamic Capabilities Query
+
+When a user asks the bot what it can do, the bot derives its answer dynamically from the live system state rather than returning a hardcoded list.
+
+### Trigger Phrases
+
+Any message matching one of the following patterns routes to the dynamic capabilities handler:
+
+- "what can you do"
+- "how can you help"
+- "what do you do"
+- "what are your capabilities"
+- "tell me what you can do"
+
+### Behaviour
+
+1. Bot **always calls `list_systems` first** — the response is derived from the tool result, not from a template.
+2. Only systems with a connected status (✅) are listed in the response.
+3. System names are **never hardcoded** — they come directly from the `list_systems` tool output.
+
+### Response Template
+
+```
+Generic opening → active systems → 4 capability bullets → system coverage note
+```
+
+**With 1 connected system:**
+
+```
+I'm Fivetran's compliance agent. I currently have access to [system].
+
+Here's what I can help with:
+- Detect SOD (Segregation of Duties) conflicts in user roles
+- Review who has access to what and flag high-risk combinations
+- Support exception requests and approval workflows
+- Answer compliance questions with data from your connected systems
+
+As of now this covers [system] only — additional systems will be included automatically once connected.
+```
+
+**With 2+ connected systems:**
+
+```
+I'm Fivetran's compliance agent. I currently have access to [system A] and [system B].
+
+Here's what I can help with:
+- Detect SOD conflicts across user roles in [system A] and [system B]
+- Identify users with admin rights in [system A] AND [system B] simultaneously
+- Support exception requests and approval workflows
+- Answer compliance questions with data from your connected systems
+
+Coverage spans all connected systems above and will expand automatically as new systems are integrated.
+```
+
+### Length Constraint
+
+The capabilities response must be **at most 800 characters**. If the dynamically generated text exceeds this limit, trim at a sentence boundary before the limit.
+
+### Key Rules
+
+| Rule | Detail |
+|---|---|
+| Always call `list_systems` | Never answer from memory or hardcoded knowledge |
+| Only list connected systems | Systems not returning ✅ are omitted |
+| Never hardcode system names | System names come from `list_systems` tool output |
+| Maximum 800 characters | Trim at sentence boundary if needed |
+| Cross-system framing (2+) | Describe cross-system reporting when multiple systems are connected |
+
+---
+
 ## 💬 NEW: DM Conversation Context (Feb 2026)
 
 The bot now maintains conversation history in **direct message channels**, not only in channel threads.
@@ -598,16 +770,19 @@ for turn in range(max_turns):
 3. [NEW: LangSmith Observability + ChatAnthropic Migration (Feb 2026)](#new-langsmith-observability--chatanthropic-migration-feb-2026)
 4. [Memory Management — Phase A + B (Feb 2026)](#-memory-management--phase-a--b-feb-2026)
 5. [NEW: Feedback Loop — Human Answer Scoring (Feb 2026)](#-new-feedback-loop--human-answer-scoring-feb-2026)
-6. [NEW: DM Conversation Context (Feb 2026)](#-new-dm-conversation-context-feb-2026)
-7. [NEW: Multi-Turn Agentic Tool Use (Feb 2026)](#-new-multi-turn-agentic-tool-use-feb-2026)
-8. [Integration Options](#integration-options)
-9. [Option 1: Slack + Claude API (Recommended)](#option-1-slack--claude-api-recommended)
-10. [Option 2: Direct Slack Integration](#option-2-direct-slack-integration)
-11. [Option 3: Slack Slash Commands](#option-3-slack-slash-commands)
-12. [Deployment Guide](#deployment-guide)
-13. [Security Considerations](#security-considerations)
-14. [Usage Examples](#usage-examples)
-15. [Cost Analysis](#cost-analysis)
+6. [Bot Identity](#bot-identity)
+7. [Response Length Management](#response-length-management)
+8. [Dynamic Capabilities Query](#dynamic-capabilities-query)
+9. [NEW: DM Conversation Context (Feb 2026)](#-new-dm-conversation-context-feb-2026)
+10. [NEW: Multi-Turn Agentic Tool Use (Feb 2026)](#-new-multi-turn-agentic-tool-use-feb-2026)
+11. [Integration Options](#integration-options)
+12. [Option 1: Slack + Claude API (Recommended)](#option-1-slack--claude-api-recommended)
+13. [Option 2: Direct Slack Integration](#option-2-direct-slack-integration)
+14. [Option 3: Slack Slash Commands](#option-3-slack-slash-commands)
+15. [Deployment Guide](#deployment-guide)
+16. [Security Considerations](#security-considerations)
+17. [Usage Examples](#usage-examples)
+18. [Cost Analysis](#cost-analysis)
 
 ---
 
@@ -938,7 +1113,7 @@ def handle_slack_message(event: dict) -> str:
     # Call Claude API with tools
     try:
         # System prompt with user context
-        system_prompt = f"""You are ComplianceBot, an AI assistant for SOD (Segregation of Duties) compliance management.
+        system_prompt = f"""You are ComplianceBot, Fivetran's compliance agent. You help with access governance, SOD conflict detection, and compliance reporting.
 
 Current user: {user_email}
 
@@ -1486,6 +1661,7 @@ Your existing MCP server serves:
 ---
 
 **Change Log:**
+- v3.4 (2026-02-27): Response length management, dynamic capabilities query, identity rebrand — `MAX_SLACK_RESPONSE_CHARS=2000` with `_trim_response_for_slack()` auto-upload via `files_upload_v2()`; dynamic capabilities handler calls `list_systems` first and derives response from tool result; bot identity updated to "Fivetran's compliance agent" (SOD detection is one capability, not the identity); prohibited phrases "SOD agent" and "SOD compliance agent" documented
 - v3.3 (2026-02-27): Added Phase B correction modal — 👎 opens a "What went wrong?" modal; correction stored in `answer_feedback.correction` and written to LangSmith as `human_correction` feedback; `private_metadata` carries button payload context to view handler; `trigger_id` timing note
 - v3.2 (2026-02-27): Added `get_role_risk_matrix` tool (17 roles, 153 cross-role pairs, 443 conflict rows); `list_violations` tool with department/severity filters and roles_only mode; `role_risk` intent group in `utils/tool_router.py`; `_trim_history` fix for orphaned tool_result crash; McKinsey partner voice section in system prompt; LANGUAGE section banning "dangerous" in favour of "high-risk" / "elevated risk" / "presents material control risk"
 - v3.1 (2026-02-27): FivetranChat-style formatting (clean prose, no emojis); feedback buttons simplified to 👎 👍 (dropped PARTIAL)
@@ -1494,6 +1670,6 @@ Your existing MCP server serves:
 
 ---
 
-**Document Version:** 3.3
+**Document Version:** 3.4
 **Last Updated:** 2026-02-27
 **Maintained By:** DevOps Team
