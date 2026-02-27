@@ -478,8 +478,9 @@ def _trim_history(messages: List) -> List:
         return messages
     candidate = messages[-(MAX_HISTORY_TURNS * 2):]
     # Advance to the first HumanMessage to avoid orphaned tool_result blocks
+    from langchain_core.messages import HumanMessage as _HumanMessage
     for i, m in enumerate(candidate):
-        if isinstance(m, HumanMessage):
+        if isinstance(m, _HumanMessage):
             return candidate[i:]
     # Fallback: can't find a clean HumanMessage boundary — return full list
     return messages
