@@ -1,0 +1,1343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CLAUDE_MULTI_AGENT.md Generator</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --navy:   #1a1f36;
+    --indigo: #5865f2;
+    --indigo-hover: #4752c4;
+    --bg:     #f5f6fa;
+    --white:  #ffffff;
+    --border: #dde1ef;
+    --text:   #1a1f36;
+    --muted:  #6b7280;
+    --label:  #374151;
+    --accent-bg: #eef0fd;
+    --danger: #ef4444;
+    --success: #22c55e;
+    --section-header: #f0f1fa;
+  }
+
+  html, body { height: 100%; }
+
+  body {
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── Header ── */
+  header {
+    background: var(--navy);
+    color: #fff;
+    padding: 0 20px;
+    height: 54px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    border-bottom: 2px solid var(--indigo);
+    z-index: 10;
+  }
+  header h1 {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  header h1 .badge {
+    background: var(--indigo);
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 4px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .header-actions { display: flex; gap: 8px; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 13px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+    font-family: inherit;
+  }
+  .btn-primary { background: var(--indigo); color: #fff; }
+  .btn-primary:hover { background: var(--indigo-hover); }
+  .btn-ghost {
+    background: rgba(255,255,255,0.12);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.2);
+  }
+  .btn-ghost:hover { background: rgba(255,255,255,0.2); }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  .btn-danger { background: #fef2f2; color: var(--danger); border: 1px solid #fecaca; }
+  .btn-danger:hover { background: #fee2e2; }
+  .btn-add {
+    background: var(--accent-bg);
+    color: var(--indigo);
+    border: 1px dashed var(--indigo);
+    font-size: 12px;
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-family: inherit;
+    transition: background 0.15s;
+  }
+  .btn-add:hover { background: #dde1fd; }
+
+  /* ── Layout ── */
+  .workspace {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    gap: 0;
+  }
+
+  /* ── Left Panel ── */
+  .left-panel {
+    width: 55%;
+    overflow-y: auto;
+    background: var(--bg);
+    padding: 16px 18px 32px;
+    border-right: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  /* ── Right Panel ── */
+  .right-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--white);
+  }
+  .right-panel-header {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    background: var(--section-header);
+  }
+  .right-panel-header span {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .output-area {
+    flex: 1;
+    width: 100%;
+    border: none;
+    outline: none;
+    resize: none;
+    font-family: "SF Mono", "Fira Code", "Cascadia Mono", Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.65;
+    padding: 16px;
+    background: var(--white);
+    color: #1e2a3a;
+    tab-size: 2;
+  }
+
+  /* ── Accordion Sections ── */
+  .section-card {
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .section-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 15px;
+    background: var(--section-header);
+    cursor: pointer;
+    user-select: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-title:hover { background: #e8eaf7; }
+  .section-title-left {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .section-num {
+    background: var(--indigo);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .section-title h2 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .chevron {
+    font-size: 11px;
+    color: var(--muted);
+    transition: transform 0.2s;
+    display: inline-block;
+  }
+  .chevron.open { transform: rotate(180deg); }
+  .section-body {
+    padding: 14px 15px;
+    display: none;
+  }
+  .section-body.open { display: block; }
+
+  /* ── Form Elements ── */
+  .field { margin-bottom: 11px; }
+  .field label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--label);
+    margin-bottom: 4px;
+  }
+  .field .helper {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 3px;
+    line-height: 1.5;
+  }
+  input[type="text"],
+  input[type="number"],
+  input[type="date"],
+  textarea,
+  select {
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+    color: var(--text);
+    background: var(--white);
+    transition: border-color 0.15s, box-shadow 0.15s;
+    outline: none;
+  }
+  input[type="text"]:focus,
+  input[type="number"]:focus,
+  input[type="date"]:focus,
+  textarea:focus,
+  select:focus {
+    border-color: var(--indigo);
+    box-shadow: 0 0 0 3px rgba(88, 101, 242, 0.12);
+  }
+  textarea { resize: vertical; line-height: 1.5; }
+  input[type="number"] { width: 80px; }
+  .field-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .field-row-3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+  }
+  .checkbox-field {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 4px;
+  }
+  .checkbox-field input[type="checkbox"] {
+    width: 15px; height: 15px;
+    accent-color: var(--indigo);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .checkbox-field label {
+    font-size: 12px;
+    color: var(--label);
+    cursor: pointer;
+    margin: 0;
+  }
+
+  /* ── Dynamic Item Cards ── */
+  .dynamic-list { display: flex; flex-direction: column; gap: 10px; }
+  .item-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #fafbff;
+  }
+  .item-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 11px;
+    background: #f0f1fa;
+    border-bottom: 1px solid var(--border);
+  }
+  .item-card-header span {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--indigo);
+  }
+  .item-card-body { padding: 11px; }
+
+  /* ── Copy feedback ── */
+  .copy-feedback {
+    font-size: 11px;
+    color: var(--success);
+    font-weight: 600;
+    opacity: 0;
+    transition: opacity 0.3s;
+    margin-left: 8px;
+  }
+  .copy-feedback.show { opacity: 1; }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #c5cadf; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #9ea7c8; }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════ HEADER -->
+<header>
+  <h1>
+    <span class="badge">MD</span>
+    CLAUDE_MULTI_AGENT.md Generator
+  </h1>
+  <div class="header-actions">
+    <span class="copy-feedback" id="copyFeedback">Copied!</span>
+    <button class="btn btn-ghost" onclick="copyOutput()">
+      &#x2398; Copy
+    </button>
+    <button class="btn btn-primary" onclick="downloadFile()">
+      &#8595; Download CLAUDE_MULTI_AGENT.md
+    </button>
+  </div>
+</header>
+
+<!-- ═══════════════════════════════════════════════════ WORKSPACE -->
+<div class="workspace">
+
+  <!-- ════════════════════ LEFT PANEL (FORM) ════════════════════ -->
+  <div class="left-panel" id="leftPanel">
+
+    <!-- ── Section 1: Project Overview ── -->
+    <div class="section-card">
+      <div class="section-title" onclick="toggleSection('s1')">
+        <div class="section-title-left">
+          <div class="section-num">1</div>
+          <h2>Project Overview</h2>
+        </div>
+        <span class="chevron open" id="chev-s1">&#9660;</span>
+      </div>
+      <div class="section-body open" id="s1">
+        <div class="field">
+          <label>System Name</label>
+          <input type="text" id="systemName" placeholder="e.g. Acme Monitoring Agent" oninput="generate()">
+        </div>
+        <div class="field">
+          <label>One-line System Description</label>
+          <input type="text" id="systemDesc" placeholder="e.g. AI-powered automated monitoring across ERP, CRM, and Identity systems" oninput="generate()">
+        </div>
+        <div class="field">
+          <label>What It Does — System at a Glance</label>
+          <textarea id="systemGlance" rows="3" placeholder="Describe the system in 2-4 sentences. E.g.: This system autonomously monitors user access across business systems and detects access control issues using Claude Opus 4.6. It runs a scheduled sync agent, exposes API tools for real-time monitoring queries, and delivers results via a Slack bot with multi-turn agentic reasoning." oninput="generate()"></textarea>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Tech Stack (comma-separated)</label>
+            <input type="text" id="techStack" placeholder="Python, FastAPI, PostgreSQL, Redis, Slack, LangChain" oninput="generate()">
+          </div>
+          <div class="field">
+            <label>Version</label>
+            <input type="text" id="version" value="1.0.0" oninput="generate()">
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Author / Team</label>
+            <input type="text" id="author" placeholder="Prabal Saha" oninput="generate()">
+          </div>
+          <div class="field">
+            <label>Date</label>
+            <input type="date" id="docDate" oninput="generate()">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Section 2: Data Flow ── -->
+    <div class="section-card">
+      <div class="section-title" onclick="toggleSection('s2')">
+        <div class="section-title-left">
+          <div class="section-num">2</div>
+          <h2>Data Flow (System Diagram)</h2>
+        </div>
+        <span class="chevron open" id="chev-s2">&#9660;</span>
+      </div>
+      <div class="section-body open" id="s2">
+        <div class="field">
+          <label>Data Flow Description</label>
+          <textarea id="dataFlow" rows="4" placeholder="Describe each step on its own line, e.g.:&#10;Slack DM  →  Slack Bot (Socket Mode)&#10;Slack Bot  →  Claude Haiku (tool dispatch)&#10;Claude Haiku  →  MCP Tools (37 tools)&#10;MCP Tools  →  PostgreSQL / Redis Cache&#10;PostgreSQL  →  Claude Opus 4.6 (synthesis)&#10;Claude Opus 4.6  →  Slack Response" oninput="generate()"></textarea>
+          <div class="helper">Each line becomes one row in the flow block. Use arrows (→, ←, ↓) freely.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Section 3: Agent Roster ── -->
+    <div class="section-card">
+      <div class="section-title" onclick="toggleSection('s3')">
+        <div class="section-title-left">
+          <div class="section-num">3</div>
+          <h2>Agent Roster</h2>
+        </div>
+        <span class="chevron open" id="chev-s3">&#9660;</span>
+      </div>
+      <div class="section-body open" id="s3">
+        <div class="dynamic-list" id="agentRosterList"></div>
+        <div style="margin-top:10px">
+          <button class="btn-add" onclick="addRosterAgent()">+ Add Agent</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Section 4: Phases ── -->
+    <div class="section-card">
+      <div class="section-title" onclick="toggleSection('s4')">
+        <div class="section-title-left">
+          <div class="section-num">4</div>
+          <h2>Phases</h2>
+        </div>
+        <span class="chevron open" id="chev-s4">&#9660;</span>
+      </div>
+      <div class="section-body open" id="s4">
+        <div class="dynamic-list" id="phaseList"></div>
+        <div style="margin-top:10px">
+          <button class="btn-add" onclick="addPhase()">+ Add Phase</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Section 5: Agent Definitions ── -->
+    <div class="section-card">
+      <div class="section-title" onclick="toggleSection('s5')">
+        <div class="section-title-left">
+          <div class="section-num">5</div>
+          <h2>Agent Definitions</h2>
+        </div>
+        <span class="chevron open" id="chev-s5">&#9660;</span>
+      </div>
+      <div class="section-body open" id="s5">
+        <div class="dynamic-list" id="agentDefList"></div>
+        <div style="margin-top:10px">
+          <button class="btn-add" onclick="addAgentDef()">+ Add Agent Definition</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Section 6: Critical Rules ── -->
+    <div class="section-card">
+      <div class="section-title" onclick="toggleSection('s6')">
+        <div class="section-title-left">
+          <div class="section-num">6</div>
+          <h2>Critical Rules</h2>
+        </div>
+        <span class="chevron open" id="chev-s6">&#9660;</span>
+      </div>
+      <div class="section-body open" id="s6">
+        <div class="dynamic-list" id="ruleList"></div>
+        <div style="margin-top:10px">
+          <button class="btn-add" onclick="addRule()">+ Add Rule</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Section 7: Environment Variables ── -->
+    <div class="section-card">
+      <div class="section-title" onclick="toggleSection('s7')">
+        <div class="section-title-left">
+          <div class="section-num">7</div>
+          <h2>Environment Variables</h2>
+        </div>
+        <span class="chevron open" id="chev-s7">&#9660;</span>
+      </div>
+      <div class="section-body open" id="s7">
+        <div class="dynamic-list" id="envGroupList"></div>
+        <div style="margin-top:10px">
+          <button class="btn-add" onclick="addEnvGroup()">+ Add Group</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Section 8: Anti-Patterns ── -->
+    <div class="section-card">
+      <div class="section-title" onclick="toggleSection('s8')">
+        <div class="section-title-left">
+          <div class="section-num">8</div>
+          <h2>Anti-Patterns</h2>
+        </div>
+        <span class="chevron open" id="chev-s8">&#9660;</span>
+      </div>
+      <div class="section-body open" id="s8">
+        <div class="dynamic-list" id="antiPatternList"></div>
+        <div style="margin-top:10px">
+          <button class="btn-add" onclick="addAntiPattern()">+ Add Anti-Pattern</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Section 9: Starting Order ── -->
+    <div class="section-card">
+      <div class="section-title" onclick="toggleSection('s9')">
+        <div class="section-title-left">
+          <div class="section-num">9</div>
+          <h2>Starting Order</h2>
+        </div>
+        <span class="chevron open" id="chev-s9">&#9660;</span>
+      </div>
+      <div class="section-body open" id="s9">
+        <div class="field">
+          <label>Bash Commands (one per line, in startup order)</label>
+          <textarea id="startingOrder" rows="8" placeholder="# 1. Database
+python3 my-agent/database/setup.py
+
+# 2. API Server
+cd my-agent && python3 -m api.server > /tmp/api_server.log 2>&1 &
+
+# 3. Bot
+python3 my-agent/bot.py" oninput="generate()"></textarea>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /left-panel -->
+
+  <!-- ════════════════════ RIGHT PANEL (OUTPUT) ════════════════════ -->
+  <div class="right-panel">
+    <div class="right-panel-header">
+      <span>Live Preview — CLAUDE_MULTI_AGENT.md</span>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm btn-ghost" style="color:#555;background:#eef;border:1px solid #c5cadf" onclick="copyOutput()">&#x2398; Copy</button>
+      </div>
+    </div>
+    <textarea class="output-area" id="outputArea" readonly spellcheck="false"></textarea>
+  </div>
+
+</div><!-- /workspace -->
+
+<!-- ═══════════════════════════════════════════════════ JAVASCRIPT -->
+<script>
+// ─────────────────────────────────────────────────────
+// Accordion
+// ─────────────────────────────────────────────────────
+function toggleSection(id) {
+  const body = document.getElementById(id);
+  const chev = document.getElementById('chev-' + id);
+  const isOpen = body.classList.contains('open');
+  body.classList.toggle('open', !isOpen);
+  body.style.display = isOpen ? 'none' : 'block';
+  chev.classList.toggle('open', !isOpen);
+}
+// Init: all open on load (display already set via CSS .open { display:block })
+
+// ─────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────
+function val(id) {
+  const el = document.getElementById(id);
+  return el ? el.value.trim() : '';
+}
+
+function makeDeleteBtn(onclick) {
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-sm btn-danger';
+  btn.textContent = '✕ Remove';
+  btn.onclick = onclick;
+  return btn;
+}
+
+function pad(str, len) {
+  return String(str).padEnd(len, ' ');
+}
+
+let rosterAgentCount = 0;
+let phaseCount = 0;
+let agentDefCount = 0;
+let ruleCount = 0;
+let envGroupCount = 0;
+let antiPatternCount = 0;
+
+// ─────────────────────────────────────────────────────
+// Section 3 — Agent Roster
+// ─────────────────────────────────────────────────────
+const rosterDefaults = [
+  { id: 'A', name: 'Database Setup',     phase: 0, role: 'Create DB schema, run migrations, seed reference data', parallel: true },
+  { id: 'B', name: 'Environment Setup',  phase: 0, role: 'Validate .env vars, install dependencies, configure secrets', parallel: true },
+  { id: 'C', name: 'Data Collector',     phase: 1, role: 'Sync users/roles/permissions from source system via REST API', parallel: true },
+  { id: 'D', name: 'API Server',         phase: 1, role: 'Build FastAPI server exposing 37 automation tools', parallel: true },
+];
+
+function addRosterAgent(defaults) {
+  rosterAgentCount++;
+  const idx = rosterAgentCount;
+  const d = defaults || {};
+  const container = document.getElementById('agentRosterList');
+  const card = document.createElement('div');
+  card.className = 'item-card';
+  card.id = 'rosterAgent-' + idx;
+  card.innerHTML = `
+    <div class="item-card-header">
+      <span>Agent #${idx}</span>
+    </div>
+    <div class="item-card-body">
+      <div class="field-row-3">
+        <div class="field">
+          <label>Agent ID</label>
+          <input type="text" class="roster-id" placeholder="A" value="${d.id||''}" oninput="generate()">
+        </div>
+        <div class="field">
+          <label>Agent Name</label>
+          <input type="text" class="roster-name" placeholder="Database Setup" value="${d.name||''}" oninput="generate()">
+        </div>
+        <div class="field">
+          <label>Phase #</label>
+          <input type="number" class="roster-phase" placeholder="0" value="${d.phase !== undefined ? d.phase : ''}" min="0" oninput="generate()">
+        </div>
+      </div>
+      <div class="field">
+        <label>Role / Description</label>
+        <input type="text" class="roster-role" placeholder="Create DB schema, run migrations" value="${d.role||''}" oninput="generate()">
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">
+        <div class="checkbox-field">
+          <input type="checkbox" class="roster-parallel" id="rp-${idx}" ${d.parallel ? 'checked' : ''} onchange="generate()">
+          <label for="rp-${idx}">Can run in parallel?</label>
+        </div>
+      </div>
+    </div>`;
+  const delBtn = makeDeleteBtn(() => { card.remove(); generate(); });
+  card.querySelector('.item-card-header').appendChild(delBtn);
+  container.appendChild(card);
+  generate();
+}
+
+function getRosterAgents() {
+  const cards = document.querySelectorAll('#agentRosterList .item-card');
+  return Array.from(cards).map(c => ({
+    id:       c.querySelector('.roster-id').value.trim(),
+    name:     c.querySelector('.roster-name').value.trim(),
+    phase:    c.querySelector('.roster-phase').value.trim(),
+    role:     c.querySelector('.roster-role').value.trim(),
+    parallel: c.querySelector('.roster-parallel').checked,
+  }));
+}
+
+// ─────────────────────────────────────────────────────
+// Section 4 — Phases
+// ─────────────────────────────────────────────────────
+const phaseDefaults = [
+  { num: 0, name: 'Infrastructure',  agents: 'A, B', parallel: true,  desc: 'Database and environment setup — nothing else starts without this' },
+  { num: 1, name: 'Core Services',   agents: 'C, D', parallel: true,  desc: 'Data collection and MCP server — run concurrently after Phase 0' },
+  { num: 2, name: 'QA & Validation', agents: 'T, U', parallel: true,  desc: 'Test + QA agents run together; Bug Fix agent V follows both' },
+];
+
+function addPhase(defaults) {
+  phaseCount++;
+  const idx = phaseCount;
+  const d = defaults || {};
+  const container = document.getElementById('phaseList');
+  const card = document.createElement('div');
+  card.className = 'item-card';
+  card.id = 'phase-' + idx;
+  card.innerHTML = `
+    <div class="item-card-header">
+      <span>Phase Entry #${idx}</span>
+    </div>
+    <div class="item-card-body">
+      <div class="field-row">
+        <div class="field">
+          <label>Phase Number</label>
+          <input type="number" class="phase-num" placeholder="0" value="${d.num !== undefined ? d.num : ''}" min="0" oninput="generate()">
+        </div>
+        <div class="field">
+          <label>Phase Name</label>
+          <input type="text" class="phase-name" placeholder="Infrastructure" value="${d.name||''}" oninput="generate()">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Agent IDs in this phase (comma-separated)</label>
+          <input type="text" class="phase-agents" placeholder="A, B" value="${d.agents||''}" oninput="generate()">
+        </div>
+        <div class="field">
+          <label>Brief Description</label>
+          <input type="text" class="phase-desc" placeholder="Run in parallel after Phase N" value="${d.desc||''}" oninput="generate()">
+        </div>
+      </div>
+      <div class="checkbox-field" style="margin-top:4px">
+        <input type="checkbox" class="phase-parallel" id="pp-${idx}" ${d.parallel ? 'checked' : ''} onchange="generate()">
+        <label for="pp-${idx}">Agents in this phase run concurrently?</label>
+      </div>
+    </div>`;
+  const delBtn = makeDeleteBtn(() => { card.remove(); generate(); });
+  card.querySelector('.item-card-header').appendChild(delBtn);
+  container.appendChild(card);
+  generate();
+}
+
+function getPhases() {
+  const cards = document.querySelectorAll('#phaseList .item-card');
+  return Array.from(cards).map(c => ({
+    num:      c.querySelector('.phase-num').value.trim(),
+    name:     c.querySelector('.phase-name').value.trim(),
+    agents:   c.querySelector('.phase-agents').value.trim(),
+    desc:     c.querySelector('.phase-desc').value.trim(),
+    parallel: c.querySelector('.phase-parallel').checked,
+  }));
+}
+
+// ─────────────────────────────────────────────────────
+// Section 5 — Agent Definitions
+// ─────────────────────────────────────────────────────
+const agentDefDefaults = [
+  {
+    id: 'A',
+    name: 'Database Setup Agent',
+    goal: 'PostgreSQL database is running, all tables exist, and reference data is seeded.',
+    inputs: 'database/migrations/*.sql, database/seed_data/rules.json, .env (DATABASE_URL)',
+    produces: 'Running PostgreSQL instance with tables: users, issues, scans, conversation_summaries, rules, role_pairs',
+    prompt: `You are the Database Setup Agent. Create and migrate the PostgreSQL schema for the system.
+
+Steps:
+1. Run alembic upgrade head to apply all migrations
+2. Run python3 database/setup.py to seed reference data
+3. Verify database connection: psql $DATABASE_URL -c "SELECT 1;"
+
+CRITICAL rules:
+- Never use 'metadata' as a column name — SQLAlchemy reserves it
+- Python enum values must be UPPERCASE to match DB CHECK constraints
+- Always create the parent scan record before inserting child issue rows`,
+    verification: 'psql $DATABASE_URL -c "SELECT COUNT(*) FROM rules;" | grep -v "^0$"',
+  },
+  {
+    id: 'D',
+    name: 'MCP Server Agent',
+    goal: 'FastAPI API server is running on port 8080 and all 37 automation tools respond correctly.',
+    inputs: 'api/server.py, utils/tool_router.py, running PostgreSQL from Agent A, .env',
+    produces: 'Running MCP server at http://localhost:8080, accessible via STDIO bridge',
+    prompt: `You are the MCP Server Agent. Build and start the FastAPI MCP server.
+
+Steps:
+1. Verify requirements: pip install -r requirements.txt
+2. Start server: python3 -m mcp.mcp_server > /tmp/mcp_server.log 2>&1 &
+3. Wait 5 seconds, then verify: curl http://localhost:8080/health
+
+CRITICAL rules:
+- Register every new MCP tool in utils/tool_router.py (tool pre-filter) or Claude will never see it
+- Never hard-code page_size > 200 for paginated API calls — many systems silently cap pagination and lose data
+- Do not block the event loop with synchronous database calls inside async routes`,
+    verification: 'curl -s http://localhost:8080/health | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get(\'status\')==\'ok\' else 1)"',
+  },
+];
+
+function addAgentDef(defaults) {
+  agentDefCount++;
+  const idx = agentDefCount;
+  const d = defaults || {};
+  const container = document.getElementById('agentDefList');
+  const card = document.createElement('div');
+  card.className = 'item-card';
+  card.id = 'agentDef-' + idx;
+  card.innerHTML = `
+    <div class="item-card-header">
+      <span>Agent Definition #${idx}</span>
+    </div>
+    <div class="item-card-body">
+      <div class="field-row">
+        <div class="field">
+          <label>Agent ID</label>
+          <input type="text" class="def-id" placeholder="A" value="${d.id||''}" oninput="generate()">
+        </div>
+        <div class="field">
+          <label>Agent Name</label>
+          <input type="text" class="def-name" placeholder="Database Setup Agent" value="${escHtml(d.name||'')}" oninput="generate()">
+        </div>
+      </div>
+      <div class="field">
+        <label>Goal (observable output when done)</label>
+        <textarea class="def-goal" rows="2" placeholder="PostgreSQL database is running with all tables created and reference data seeded." oninput="generate()">${escHtml(d.goal||'')}</textarea>
+      </div>
+      <div class="field">
+        <label>Inputs (files / services / data this agent needs)</label>
+        <textarea class="def-inputs" rows="2" placeholder="database/migrations/*.sql, database/seed_data/rules.json, .env (DATABASE_URL)" oninput="generate()">${escHtml(d.inputs||'')}</textarea>
+      </div>
+      <div class="field">
+        <label>Produces (files / DB state this agent creates or modifies)</label>
+        <textarea class="def-produces" rows="2" placeholder="Running PostgreSQL with tables: users, issues, scans, rules" oninput="generate()">${escHtml(d.produces||'')}</textarea>
+      </div>
+      <div class="field">
+        <label>Key Prompt Excerpt</label>
+        <textarea class="def-prompt" rows="3" placeholder="You are the Database Setup Agent. Run alembic upgrade head, seed reference data, verify database connection.&#10;&#10;CRITICAL rules:&#10;- Never use 'metadata' as a column name&#10;- Python enum values must be UPPERCASE" oninput="generate()">${escHtml(d.prompt||'')}</textarea>
+      </div>
+      <div class="field">
+        <label>Verification Gate (one bash command)</label>
+        <input type="text" class="def-verify" placeholder='psql $DATABASE_URL -c "SELECT COUNT(*) FROM rules;" | grep -v "^0$"' value="${escHtml(d.verification||'')}" oninput="generate()">
+      </div>
+    </div>`;
+  const delBtn = makeDeleteBtn(() => { card.remove(); generate(); });
+  card.querySelector('.item-card-header').appendChild(delBtn);
+  container.appendChild(card);
+  generate();
+}
+
+function getAgentDefs() {
+  const cards = document.querySelectorAll('#agentDefList .item-card');
+  return Array.from(cards).map(c => ({
+    id:       c.querySelector('.def-id').value.trim(),
+    name:     c.querySelector('.def-name').value.trim(),
+    goal:     c.querySelector('.def-goal').value.trim(),
+    inputs:   c.querySelector('.def-inputs').value.trim(),
+    produces: c.querySelector('.def-produces').value.trim(),
+    prompt:   c.querySelector('.def-prompt').value.trim(),
+    verify:   c.querySelector('.def-verify').value.trim(),
+  }));
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─────────────────────────────────────────────────────
+// Section 6 — Critical Rules
+// ─────────────────────────────────────────────────────
+const ruleDefaults = [
+  { title: 'Never use reserved SQLAlchemy names',    detail: "Use 'sync_metadata' or 'extra_metadata' — never bare 'metadata' as a column name",                                 impact: 'SILENT_FAILURE' },
+  { title: 'Source system page_size limits',        detail: 'Many REST APIs silently cap pagination below the requested limit; always verify actual record counts against the source system',    impact: 'DATA_LOSS' },
+  { title: 'Python enum values must be UPPERCASE',   detail: "DB CHECK constraints expect 'PENDING', 'RUNNING', 'SUCCESS'. Lowercase strings fail the constraint at insert time",  impact: 'IMPORT_ERROR' },
+];
+
+const impactOptions = ['SILENT_FAILURE', 'IMPORT_ERROR', 'DATA_LOSS', 'WRONG_ANSWER', 'SECURITY'];
+
+function addRule(defaults) {
+  ruleCount++;
+  const idx = ruleCount;
+  const d = defaults || {};
+  const container = document.getElementById('ruleList');
+  const card = document.createElement('div');
+  card.className = 'item-card';
+  card.id = 'rule-' + idx;
+  const opts = impactOptions.map(o =>
+    `<option value="${o}" ${(d.impact||'') === o ? 'selected' : ''}>${o}</option>`
+  ).join('');
+  card.innerHTML = `
+    <div class="item-card-header">
+      <span>Rule #${idx}</span>
+    </div>
+    <div class="item-card-body">
+      <div class="field-row">
+        <div class="field">
+          <label>Rule Title</label>
+          <input type="text" class="rule-title" placeholder="Never use reserved names" value="${escHtml(d.title||'')}" oninput="generate()">
+        </div>
+        <div class="field">
+          <label>Impact</label>
+          <select class="rule-impact" onchange="generate()">${opts}</select>
+        </div>
+      </div>
+      <div class="field">
+        <label>Rule Detail</label>
+        <input type="text" class="rule-detail" placeholder="The specific constraint and what breaks if violated" value="${escHtml(d.detail||'')}" oninput="generate()">
+      </div>
+    </div>`;
+  const delBtn = makeDeleteBtn(() => { card.remove(); generate(); });
+  card.querySelector('.item-card-header').appendChild(delBtn);
+  container.appendChild(card);
+  generate();
+}
+
+function getRules() {
+  const cards = document.querySelectorAll('#ruleList .item-card');
+  return Array.from(cards).map((c, i) => ({
+    num:    i + 1,
+    title:  c.querySelector('.rule-title').value.trim(),
+    detail: c.querySelector('.rule-detail').value.trim(),
+    impact: c.querySelector('.rule-impact').value,
+  }));
+}
+
+// ─────────────────────────────────────────────────────
+// Section 7 — Environment Variables
+// ─────────────────────────────────────────────────────
+const envDefaults = [
+  {
+    name: 'Database',
+    vars: 'DATABASE_URL=postgresql://user:pass@localhost:5432/app_db',
+  },
+  {
+    name: 'LLM Providers',
+    vars: 'ANTHROPIC_API_KEY=sk-ant-...\nOPENAI_API_KEY=sk-...',
+  },
+  {
+    name: 'Observability Platform',
+    vars: 'OBSERVABILITY_API_KEY=key_...\nTRACING_ENABLED=true\nTRACING_PROJECT=my-agent',
+  },
+];
+
+function addEnvGroup(defaults) {
+  envGroupCount++;
+  const idx = envGroupCount;
+  const d = defaults || {};
+  const container = document.getElementById('envGroupList');
+  const card = document.createElement('div');
+  card.className = 'item-card';
+  card.id = 'envGroup-' + idx;
+  card.innerHTML = `
+    <div class="item-card-header">
+      <span>Group #${idx}</span>
+    </div>
+    <div class="item-card-body">
+      <div class="field">
+        <label>Group Name</label>
+        <input type="text" class="env-group-name" placeholder="Database" value="${escHtml(d.name||'')}" oninput="generate()">
+      </div>
+      <div class="field">
+        <label>Variables (one KEY=value per line)</label>
+        <textarea class="env-vars" rows="3" placeholder="DATABASE_URL=postgresql://...&#10;REDIS_URL=redis://localhost:6379/0" oninput="generate()">${escHtml(d.vars||'')}</textarea>
+      </div>
+    </div>`;
+  const delBtn = makeDeleteBtn(() => { card.remove(); generate(); });
+  card.querySelector('.item-card-header').appendChild(delBtn);
+  container.appendChild(card);
+  generate();
+}
+
+function getEnvGroups() {
+  const cards = document.querySelectorAll('#envGroupList .item-card');
+  return Array.from(cards).map(c => ({
+    name: c.querySelector('.env-group-name').value.trim(),
+    vars: c.querySelector('.env-vars').value.trim(),
+  }));
+}
+
+// ─────────────────────────────────────────────────────
+// Section 8 — Anti-Patterns
+// ─────────────────────────────────────────────────────
+const antiDefaults = [
+  {
+    what:    'Call get_all_users_paginated(page_size=1000)',
+    cons:    'Source API silently caps pagination — a large percentage of users are never returned, issues appear far lower than reality',
+    correct: 'Always pass page_size=200 and loop through all pages until an empty page is returned',
+  },
+  {
+    what:    'Answer access-request queries without calling analyze_access_request',
+    cons:    'Claude may hallucinate a conflict count by reasoning from prior context; actual tool call is skipped',
+    correct: 'Observability platform tool_coverage evaluator scores 0 for this — enforce with system prompt HARD LIMIT',
+  },
+  {
+    what:    'Insert an issue row before creating a scans record',
+    cons:    'Foreign key error (scan_id references scans.id) causes an IntegrityError and rolls back the entire batch',
+    correct: 'Always create and commit the Scan object first, then reference scan.id when creating issues',
+  },
+];
+
+function addAntiPattern(defaults) {
+  antiPatternCount++;
+  const idx = antiPatternCount;
+  const d = defaults || {};
+  const container = document.getElementById('antiPatternList');
+  const card = document.createElement('div');
+  card.className = 'item-card';
+  card.id = 'anti-' + idx;
+  card.innerHTML = `
+    <div class="item-card-header">
+      <span>Anti-Pattern #${idx}</span>
+    </div>
+    <div class="item-card-body">
+      <div class="field">
+        <label>What NOT to do</label>
+        <input type="text" class="anti-what" placeholder="Call get_all_users_paginated(page_size=1000)" value="${escHtml(d.what||'')}" oninput="generate()">
+      </div>
+      <div class="field">
+        <label>Consequence</label>
+        <input type="text" class="anti-cons" placeholder="79.2% of users silently dropped" value="${escHtml(d.cons||'')}" oninput="generate()">
+      </div>
+      <div class="field">
+        <label>Correct Approach</label>
+        <input type="text" class="anti-correct" placeholder="Always use page_size=200 and paginate" value="${escHtml(d.correct||'')}" oninput="generate()">
+      </div>
+    </div>`;
+  const delBtn = makeDeleteBtn(() => { card.remove(); generate(); });
+  card.querySelector('.item-card-header').appendChild(delBtn);
+  container.appendChild(card);
+  generate();
+}
+
+function getAntiPatterns() {
+  const cards = document.querySelectorAll('#antiPatternList .item-card');
+  return Array.from(cards).map(c => ({
+    what:    c.querySelector('.anti-what').value.trim(),
+    cons:    c.querySelector('.anti-cons').value.trim(),
+    correct: c.querySelector('.anti-correct').value.trim(),
+  }));
+}
+
+// ─────────────────────────────────────────────────────
+// Markdown Table Builder
+// ─────────────────────────────────────────────────────
+function mdTable(headers, rows) {
+  // Calculate column widths
+  const colWidths = headers.map((h, i) => {
+    const maxDataLen = rows.reduce((m, r) => Math.max(m, (r[i] || '').length), 0);
+    return Math.max(h.length, maxDataLen, 3);
+  });
+
+  const headerLine = '| ' + headers.map((h, i) => pad(h, colWidths[i])).join(' | ') + ' |';
+  const sepLine    = '| ' + colWidths.map(w => '-'.repeat(w)).join(' | ') + ' |';
+  const dataLines  = rows.map(r =>
+    '| ' + r.map((cell, i) => pad(cell || '', colWidths[i])).join(' | ') + ' |'
+  );
+
+  return [headerLine, sepLine, ...dataLines].join('\n');
+}
+
+// ─────────────────────────────────────────────────────
+// Markdown Generator
+// ─────────────────────────────────────────────────────
+function generate() {
+  const systemName = val('systemName') || 'Your System Name';
+  const systemDesc = val('systemDesc') || '';
+  const glance     = val('systemGlance') || '';
+  const techStack  = val('techStack') || '';
+  const version    = val('version') || '1.0.0';
+  const author     = val('author') || 'Your Team';
+  const docDate    = val('docDate') || new Date().toISOString().slice(0, 10);
+
+  const lines = [];
+
+  // ── Header ──
+  lines.push(`# Building ${systemName}: A Multi-Agent Playbook`);
+  lines.push('');
+  lines.push(`**Version:** ${version} | **Updated:** ${docDate} | **Team:** ${author}`);
+  lines.push('');
+
+  // ── System at a Glance ──
+  lines.push('## System at a Glance');
+  lines.push('');
+  if (systemDesc) {
+    lines.push(`**${systemDesc}**`);
+    lines.push('');
+  }
+  if (glance) {
+    lines.push(glance);
+    lines.push('');
+  }
+  if (techStack) {
+    lines.push(`**Tech stack:** ${techStack}`);
+    lines.push('');
+  }
+
+  // Data Flow
+  const dataFlow = val('dataFlow');
+  if (dataFlow) {
+    lines.push('**Data flow:**');
+    lines.push('```');
+    dataFlow.split('\n').forEach(l => lines.push(l));
+    lines.push('```');
+    lines.push('');
+  }
+
+  lines.push('---');
+  lines.push('');
+
+  // ── Agent Roster ──
+  const agents = getRosterAgents();
+  lines.push('## Agent Roster');
+  lines.push('');
+
+  if (agents.length) {
+    const rows = agents.map(a => [
+      a.id,
+      a.name ? a.name + ' Agent' : '',
+      a.phase !== undefined ? String(a.phase) : '',
+      a.role,
+      a.parallel ? 'Yes' : '—',
+    ]);
+    lines.push(mdTable(['ID', 'Agent', 'Phase', 'Role', 'Parallel'], rows));
+  } else {
+    lines.push('_No agents defined yet._');
+  }
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+
+  // ── Dependency Graph ──
+  const phases = getPhases();
+  lines.push('## Dependency Graph');
+  lines.push('');
+  lines.push('```');
+  if (phases.length) {
+    phases.forEach((p, i) => {
+      const agentIds = (p.agents || '').split(',').map(s => s.trim()).filter(Boolean);
+      const ids = agentIds.map(id => `[${id}]`).join(' ');
+      const parallelNote = p.parallel ? '← run in parallel' : '← sequential';
+      const desc = p.desc ? `  (${p.desc})` : '';
+      const arrow = i < phases.length - 1 ? '\n          ↓' : '';
+      lines.push(`Phase ${p.num || i}:  ${ids.padEnd(28)} ${parallelNote}${desc}${arrow}`);
+    });
+  } else {
+    lines.push('Phase 0:  [A] [B]                    ← run first, in parallel');
+    lines.push('              ↓');
+    lines.push('Phase 1:  [C] [D] [E]                ← parallel after Phase 0');
+  }
+  lines.push('```');
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+
+  // ── Agent Definitions ──
+  const defs = getAgentDefs();
+  lines.push('## Agent Definitions');
+  lines.push('');
+
+  if (defs.length) {
+    defs.forEach(d => {
+      const label = d.id ? `Agent ${d.id}` : 'Agent';
+      const nameStr = d.name || '';
+      const heading = nameStr ? `### ${label} — ${nameStr}` : `### ${label}`;
+      lines.push(heading);
+      lines.push('');
+      if (d.goal) {
+        lines.push(`**Goal:** ${d.goal}`);
+        lines.push('');
+      }
+      if (d.inputs) {
+        lines.push(`**Inputs:** ${d.inputs}`);
+        lines.push('');
+      }
+      if (d.produces) {
+        lines.push(`**Produces:** ${d.produces}`);
+        lines.push('');
+      }
+      if (d.prompt) {
+        lines.push('**Prompt (key excerpt):**');
+        d.prompt.split('\n').forEach(l => lines.push(`> ${l}`));
+        lines.push('');
+      }
+      if (d.verify) {
+        lines.push('**Verification gate:**');
+        lines.push('```bash');
+        lines.push(d.verify);
+        lines.push('```');
+        lines.push('');
+      }
+      lines.push('---');
+      lines.push('');
+    });
+  } else {
+    lines.push('_No agent definitions added yet._');
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+  }
+
+  // ── Critical Rules ──
+  const rules = getRules();
+  lines.push('## Critical Rules');
+  lines.push('');
+  if (rules.length) {
+    const rows = rules.map(r => [String(r.num), r.title, r.detail, r.impact]);
+    lines.push(mdTable(['#', 'Rule', 'Detail', 'Impact'], rows));
+  } else {
+    lines.push('_No rules defined yet._');
+  }
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+
+  // ── Environment Variables ──
+  const envGroups = getEnvGroups();
+  lines.push('## Environment Variables');
+  lines.push('');
+  if (envGroups.length) {
+    envGroups.forEach(g => {
+      if (g.name) lines.push(`### ${g.name}`);
+      if (g.vars) {
+        lines.push('```bash');
+        g.vars.split('\n').forEach(l => lines.push(l));
+        lines.push('```');
+      }
+      lines.push('');
+    });
+  } else {
+    lines.push('_No environment variable groups defined yet._');
+    lines.push('');
+  }
+  lines.push('---');
+  lines.push('');
+
+  // ── Starting Order ──
+  const startOrder = val('startingOrder');
+  lines.push('## Starting Order');
+  lines.push('');
+  lines.push('```bash');
+  if (startOrder) {
+    startOrder.split('\n').forEach(l => lines.push(l));
+  } else {
+    lines.push('# 1. Add your startup commands here');
+  }
+  lines.push('```');
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+
+  // ── Anti-Patterns ──
+  const antis = getAntiPatterns();
+  lines.push('## Anti-Patterns');
+  lines.push('');
+  if (antis.length) {
+    const rows = antis.map(a => [a.what, a.cons, a.correct]);
+    lines.push(mdTable(['What NOT to do', 'Consequence', 'Correct Approach'], rows));
+  } else {
+    lines.push('_No anti-patterns defined yet._');
+  }
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+
+  // ── Version History ──
+  lines.push('## Version History');
+  lines.push('');
+  lines.push(mdTable(
+    ['Version', 'Date', 'Author', 'Change'],
+    [[version, docDate, author, 'Initial version']]
+  ));
+  lines.push('');
+
+  document.getElementById('outputArea').value = lines.join('\n');
+}
+
+// ─────────────────────────────────────────────────────
+// Copy / Download
+// ─────────────────────────────────────────────────────
+function copyOutput() {
+  const ta = document.getElementById('outputArea');
+  ta.select();
+  ta.setSelectionRange(0, 99999);
+  try {
+    navigator.clipboard.writeText(ta.value).catch(() => document.execCommand('copy'));
+  } catch(e) {
+    document.execCommand('copy');
+  }
+  const fb = document.getElementById('copyFeedback');
+  fb.classList.add('show');
+  setTimeout(() => fb.classList.remove('show'), 2000);
+}
+
+function downloadFile() {
+  const content = document.getElementById('outputArea').value;
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'CLAUDE_MULTI_AGENT.md';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ─────────────────────────────────────────────────────
+// Init — seed all sections with defaults
+// ─────────────────────────────────────────────────────
+function init() {
+  // Pre-fill Section 1
+  document.getElementById('systemName').value   = 'Acme Monitoring Agent';
+  document.getElementById('systemDesc').value   = 'AI-powered automated monitoring across ERP, CRM, and Identity systems';
+  document.getElementById('systemGlance').value = 'This system autonomously monitors user access across key business systems and detects access control issues using Claude Opus 4.6. It runs a scheduled data-sync agent against your source systems, exposes API tools for real-time monitoring queries, and delivers results via a Slack bot with multi-turn agentic reasoning. Redis caching, observability platform tracing, and a human feedback loop ensure production reliability and continuous improvement.';
+  document.getElementById('techStack').value    = 'Python 3.9, FastAPI, PostgreSQL 14, Redis, LangChain, Slack Bolt, Claude Opus 4.6, Angular 17';
+  document.getElementById('version').value      = '1.0.0';
+  document.getElementById('author').value       = 'AI Development Team';
+  document.getElementById('docDate').value      = new Date().toISOString().slice(0, 10);
+
+  // Pre-fill Section 2
+  document.getElementById('dataFlow').value = [
+    'Slack DM / Channel Mention  →  Slack Bot (Socket Mode)',
+    'Slack Bot  →  Claude Haiku (tool-dispatch turn)',
+    'Claude Haiku  →  API Tool Call (one of 37 automation tools)',
+    'API Tool  →  Redis Cache (TTL lookup) / PostgreSQL (fresh query)',
+    'Tool Result  →  Claude Opus 4.6 (synthesis turn)',
+    'Claude Opus  →  Slack Response (≤ 2000 chars or file upload)',
+    'User Feedback (👍/👎)  →  answer_feedback table + observability platform',
+  ].join('\n');
+
+  // Section 3 — Roster
+  rosterDefaults.forEach(d => addRosterAgent(d));
+
+  // Section 4 — Phases
+  phaseDefaults.forEach(d => addPhase(d));
+
+  // Section 5 — Agent Definitions
+  agentDefDefaults.forEach(d => addAgentDef(d));
+
+  // Section 6 — Rules
+  ruleDefaults.forEach(d => addRule(d));
+
+  // Section 7 — Env vars
+  envDefaults.forEach(d => addEnvGroup(d));
+
+  // Section 8 — Anti-patterns
+  antiDefaults.forEach(d => addAntiPattern(d));
+
+  // Section 9 — Starting order
+  document.getElementById('startingOrder').value = [
+    '# 1. Database — run migrations and seed reference data',
+    'python3 my-agent/database/setup.py',
+    '',
+    '# 2. API Server — start FastAPI server in background',
+    'cd my-agent && python3 -m api.server > /tmp/api_server.log 2>&1 &',
+    '',
+    '# 3. Verify API server health',
+    'sleep 5 && curl -s http://localhost:8080/health',
+    '',
+    '# 4. Bot — start foreground process',
+    'python3 my-agent/bot.py',
+  ].join('\n');
+
+  generate();
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
