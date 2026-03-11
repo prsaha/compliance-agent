@@ -1,8 +1,36 @@
 # Slack Bot Integration Guide
 
 **Project**: Fivetran Compliance Agent - Slack Integration
-**Date**: 2026-02-27
-**Version**: 3.4
+**Version**: 4.0 (v2 production-hardened) | **Updated:** 2026-03-10
+
+---
+
+## v2 Production Changes (March 2026)
+
+The Slack bot in compliance-agent-v2 has the following production hardening applied vs v1.8:
+
+### Resilience
+- **Retry on MCP calls**: `@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))` wraps every `requests.post()` to MCP (tenacity)
+- **Circuit breaker**: `pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)` prevents cascade failures when MCP is unreachable — bot auto-recovers after 60s
+- **ThreadPoolExecutor**: Three `process_with_claude()` call sites are wrapped in `loop.run_in_executor(executor, ...)` so they don't block the Slack Socket Mode event loop
+
+### Observability
+- **Structured JSON logging**: `structlog` + `RotatingFileHandler` (10 MB, 5 backups) replaces `logging.basicConfig`
+- **Log file**: `/tmp/slack_bot_v2.log` (JSON lines)
+- **Pretty-print logs**: `tail -f /tmp/slack_bot_v2.log | python3 -c "import sys,json; [print(d.get('timestamp','')[:19], d.get('level','').upper(), d.get('event','')) for line in sys.stdin for d in [json.loads(line)] if True]"`
+
+### Startup Validation
+Startup now validates all 6 required env vars before binding: `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `ANTHROPIC_API_KEY`, `MCP_API_KEY`, `REDIS_URL`, `DATABASE_URL`. If any are missing the bot exits immediately with a clear error.
+
+### Running v2 bot
+```bash
+cd "/Users/prabal.saha/Documents/ai-agent poc/compliance-agent-v2"
+.venv/bin/python3 slack_bot_local.py > /tmp/slack_bot_v2.log 2>&1 &
+sleep 8 && tail -5 /tmp/slack_bot_v2.log
+# → "Starting to receive messages from a new connection"
+```
+
+---
 
 ---
 

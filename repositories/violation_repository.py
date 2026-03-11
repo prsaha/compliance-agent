@@ -192,7 +192,7 @@ class ViolationRepository:
 
     def bulk_create_violations(self, violations_data: List[Dict[str, Any]]) -> int:
         """
-        Bulk create violations
+        Bulk create violations using a single INSERT statement for performance.
 
         Args:
             violations_data: List of violation data dictionaries
@@ -200,17 +200,39 @@ class ViolationRepository:
         Returns:
             Number of violations created
         """
-        count = 0
-        for violation_data in violations_data:
-            try:
-                self.create_violation(violation_data)
-                count += 1
-            except Exception as e:
-                logger.error(f"Error creating violation: {str(e)}")
-                self.session.rollback()
+        import uuid as _uuid
+        if not violations_data:
+            return 0
 
-        logger.info(f"Bulk created {count}/{len(violations_data)} violations")
-        return count
+        mappings = []
+        for vd in violations_data:
+            mappings.append({
+                "id": _uuid.uuid4(),
+                "user_id": vd["user_id"],
+                "rule_id": vd["rule_id"],
+                "scan_id": vd.get("scan_id"),
+                "severity": ViolationSeverity[vd["severity"]],
+                "status": ViolationStatus[vd.get("status", "OPEN")],
+                "risk_score": vd.get("risk_score", 0.0),
+                "title": vd["title"],
+                "description": vd.get("description"),
+                "conflicting_roles": vd.get("conflicting_roles", []),
+                "conflicting_permissions": vd.get("conflicting_permissions", []),
+                "embedding": vd.get("embedding"),
+                "violation_metadata": vd.get("violation_metadata", {}),
+                "detected_at": datetime.utcnow(),
+            })
+
+        try:
+            self.session.bulk_insert_mappings(Violation, mappings)
+            self.session.commit()
+            count = len(mappings)
+            logger.info(f"Bulk created {count}/{len(violations_data)} violations")
+            return count
+        except Exception as e:
+            logger.error(f"Bulk violation insert failed: {str(e)}")
+            self.session.rollback()
+            return 0
 
     def get_violations_by_scan(self, scan_id: str) -> List[Violation]:
         """

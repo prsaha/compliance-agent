@@ -12,14 +12,19 @@ import logging
 from typing import Optional, Dict, List, Tuple, Any
 from datetime import datetime
 
+from services.jira_client import JiraClient
+
 logger = logging.getLogger(__name__)
 
 
 class ApprovalService:
     """Service for managing exception approval workflows with RBAC"""
 
-    def __init__(self, session):
+    def __init__(self, session, jira_client: Optional[JiraClient] = None):
         self.session = session
+        # JiraClient is injected; create a default instance if not provided.
+        # Tests can pass a mock here to avoid real HTTP calls.
+        self._jira = jira_client or JiraClient()
 
     # =========================================================================
     # APPROVAL AUTHORITY CONFIGURATION
@@ -295,7 +300,8 @@ class ApprovalService:
         exception_details: Dict[str, Any]
     ) -> Optional[str]:
         """
-        Create Jira ticket for exception approval routing
+        Create Jira ticket for exception approval routing.
+        Delegates HTTP to JiraClient (injected via constructor).
 
         Args:
             requester_info: Info about user requesting approval
@@ -303,75 +309,33 @@ class ApprovalService:
             exception_details: Exception details (user, roles, conflicts, etc.)
 
         Returns:
-            Jira ticket ID or None if failed
+            Jira ticket key (e.g. "COMP-42") or None if failed / not configured
         """
-        try:
-            # Check if Jira is configured
-            import os
-            jira_url = os.getenv('JIRA_URL')
-            jira_api_token = os.getenv('JIRA_API_TOKEN')
-            jira_email = os.getenv('JIRA_EMAIL')
-            jira_project = os.getenv('JIRA_PROJECT', 'COMP')  # Default to COMP project
-
-            if not all([jira_url, jira_api_token, jira_email]):
-                logger.warning("Jira not configured - skipping ticket creation")
-                return None
-
-            # Create ticket via Jira API
-            import requests
-            from requests.auth import HTTPBasicAuth
-
-            # Format description
-            description = self._format_jira_description(
-                requester_info,
-                approver_info,
-                exception_details
-            )
-
-            # Prepare ticket data
-            ticket_data = {
-                "fields": {
-                    "project": {"key": jira_project},
-                    "summary": (
-                        f"SOD Exception Approval Required: "
-                        f"{exception_details.get('user_name')} - "
-                        f"{len(exception_details.get('role_names', []))} roles, "
-                        f"{exception_details.get('conflict_count', 0)} conflicts"
-                    ),
-                    "description": description,
-                    "issuetype": {"name": "Task"},
-                    "priority": {"name": self._get_jira_priority(exception_details.get('risk_score', 0))},
-                    "labels": ["sod-exception", "approval-required", "compliance"]
-                }
-            }
-
-            # Add assignee if we have Jira username
-            if approver_info.get('jira_username'):
-                ticket_data["fields"]["assignee"] = {"name": approver_info['jira_username']}
-
-            # Create ticket
-            response = requests.post(
-                f"{jira_url}/rest/api/2/issue",
-                auth=HTTPBasicAuth(jira_email, jira_api_token),
-                json=ticket_data,
-                headers={"Content-Type": "application/json"}
-            )
-
-            if response.status_code == 201:
-                ticket = response.json()
-                ticket_key = ticket.get('key')
-                logger.info(f"Created Jira ticket: {ticket_key}")
-                return ticket_key
-            else:
-                logger.error(f"Failed to create Jira ticket: {response.status_code} - {response.text}")
-                return None
-
-        except ImportError:
-            logger.warning("requests library not installed - cannot create Jira ticket")
+        if not self._jira.is_configured:
+            logger.warning("Jira not configured — skipping ticket creation")
             return None
-        except Exception as e:
-            logger.error(f"Error creating Jira ticket: {str(e)}")
-            return None
+
+        description = self._format_jira_description(
+            requester_info, approver_info, exception_details
+        )
+
+        fields: Dict[str, Any] = {
+            "summary": (
+                f"SOD Exception Approval Required: "
+                f"{exception_details.get('user_name')} - "
+                f"{len(exception_details.get('role_names', []))} roles, "
+                f"{exception_details.get('conflict_count', 0)} conflicts"
+            ),
+            "description": description,
+            "issuetype": {"name": "Task"},
+            "priority": {"name": self._get_jira_priority(exception_details.get("risk_score", 0))},
+            "labels": ["sod-exception", "approval-required", "compliance"],
+        }
+
+        if approver_info.get("jira_username"):
+            fields["assignee"] = {"name": approver_info["jira_username"]}
+
+        return self._jira.create_issue(fields)
 
     def _format_jira_description(
         self,

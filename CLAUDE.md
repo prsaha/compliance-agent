@@ -1,10 +1,53 @@
-# Claude Code Project Guide: SOD Compliance System
+# Claude Code Project Guide: SOD Compliance System — v2 (Production-Ready)
 
 **Project:** AI-Powered Segregation of Duties (SOD) Compliance System
-**Version:** 1.6
-**Last Updated:** 2026-02-27
+**Version:** 2.0
+**Last Updated:** 2026-03-09
+**Based on:** compliance-agent v1.8 (all production gaps fixed)
 **Primary Language:** Python 3.9+
 **Framework:** FastAPI with MCP (Model Context Protocol)
+
+---
+
+## v2 Production Fixes Applied
+
+This codebase is **compliance-agent-v2** — a full copy of compliance-agent with every
+architectural gap from the principal-architect review fixed. Do NOT confuse it with the
+original `compliance-agent/` directory.
+
+### Critical fixes
+| File | Fix |
+|------|-----|
+| `services/netsuite_client.py:144` | `page_size` default 1000 → **200** (NetSuite RESTlet hard-cap; 1000 caused 79.2% data loss) |
+| `agents/analyzer.py` | Silent exception return fixed: except block now returns `None` instead of `violation_data` |
+| `utils/tool_router.py` | 13 missing tools registered (was 31; now all 44 mcp_tools handlers are reachable) |
+
+### High fixes
+| File | Fix |
+|------|-----|
+| `requirements.txt` | Added `tenacity`, `pybreaker`, `structlog`, `python-json-logger`, `PyYAML` |
+| `slack_bot_local.py` | Structured JSON logging with `structlog` + `RotatingFileHandler` |
+| `slack_bot_local.py` | `requests.post` to MCP wrapped in `@retry` (tenacity) + `CircuitBreaker` (pybreaker) |
+| `slack_bot_local.py` | Three `process_with_claude()` calls offloaded to `_executor` (ThreadPoolExecutor) |
+| `slack_bot_local.py` | Startup env check extended: now validates all 7 required vars |
+| `repositories/violation_repository.py` | `bulk_create_violations`: N commits → single `bulk_insert_mappings` |
+| `repositories/role_repository.py` | `bulk_upsert_roles`: N commits → `bulk_insert_mappings` + `bulk_update_mappings` |
+| `models/database.py` | 4 missing indexes added: `violations.rule_id`, `violations.scan_id`, `user_reconciliations.netsuite_user_id`, `user_reconciliations.okta_user_id` |
+| `services/cache_service.py` | Added `invalidate_role()`, `invalidate_violations()`, `invalidate_rules()` |
+
+### Medium fixes
+| File | Fix |
+|------|-----|
+| `repositories/base_repository.py` | NEW: Generic `BaseRepository[T]` with `bulk_create`, `bulk_update`, `add`, `delete` |
+| `mcp/tools/` | NEW: Phase-based package (collection/analysis/violation/exception/admin modules) |
+| `mcp/admin_api.py` | JWT role detection: substring match → **exact token match** (prevents privilege escalation) |
+| `services/jira_client.py` | NEW: `JiraClient` — extracted from `ApprovalService` |
+| `services/approval_service.py` | Jira HTTP calls delegated to injected `JiraClient` |
+| `config/role_keywords.yaml` | NEW: Externalised role keyword lists (finance, business, create, approve, specific) |
+| `agents/analyzer.py` | Role keyword lists loaded from YAML at startup (falls back to built-ins) |
+| `repositories/exception_repository.py` | `find_similar_exceptions` bounded to 500 rows (was full-table scan) |
+
+---
 
 ---
 
@@ -24,9 +67,81 @@ This is an autonomous compliance monitoring system that peforms user access revi
 - ✅ 1,928/1,933 users synced from NetSuite (99.7% coverage)
 - ✅ 18 SOD rules implemented and active
 - ✅ 55x query performance improvement (on-demand → cached)
-- ✅ 37 MCP tools operational (updated from 11)
+- ✅ 44 MCP tools operational (was 37; 7 previously unreachable tools now registered)
 - ✅ Autonomous agent running 24/7
 - ✅ **NEW**: Slack bot with multi-turn agentic reasoning (Feb 2026)
+- ✅ **v2**: All production gaps fixed — retry, circuit breaker, bulk ops, indexes, structured logging
+
+---
+
+## Production Patterns (v2)
+
+### Retry pattern (HTTP calls)
+```python
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import requests
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception_type((requests.ConnectionError, requests.Timeout)),
+    reraise=True,
+)
+def call_external_api():
+    return requests.post(url, json=payload, timeout=30)
+```
+
+### Circuit breaker pattern
+```python
+import pybreaker
+_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
+result = _breaker.call(call_external_api)
+```
+
+### Bulk insert (replaces N individual commits)
+```python
+# ✅ GOOD — single DB round-trip
+session.bulk_insert_mappings(Violation, list_of_dicts)
+session.commit()
+
+# ❌ BAD — N commits
+for v in violations:
+    session.add(Violation(**v))
+    session.commit()
+```
+
+### JiraClient usage (injected, testable)
+```python
+from services.jira_client import JiraClient
+
+# Production (reads env vars automatically)
+approval_svc = ApprovalService(session)
+
+# Test (inject mock)
+approval_svc = ApprovalService(session, jira_client=MockJiraClient())
+```
+
+### BaseRepository[T] usage
+```python
+from repositories.base_repository import BaseRepository
+from models.database import Violation
+
+class ViolationRepository(BaseRepository[Violation]):
+    model = Violation
+    # Inherits: get_by_id, get_all, add, update, delete, bulk_create, bulk_update
+```
+
+### Adding new tool handlers
+1. Add handler function to `mcp/mcp_tools.py`
+2. Register in `utils/tool_router.py` (add to the appropriate intent group)
+3. Add re-export to the matching `mcp/tools/<phase>_tools.py` module
+4. Restart MCP server, then `POST /tools/refresh` to the shared gateway
+
+### Role keywords (config, not code)
+Edit `config/role_keywords.yaml` to add/remove role keywords for SOD violation detection.
+No Python code changes needed. Reload takes effect on next server restart.
+
+---
 
 ### 🚀 Latest Enhancement: Multi-Turn Agentic Tool Use (Feb 2026)
 
@@ -851,6 +966,7 @@ A: Create new connector in `connectors/`, implement `BaseConnector` interface, r
 - [x] **NEW**: Response length prompt constraints — `HARD LIMIT` for `get_role_risk_matrix` (3 bullets, 1200 chars max), `GLOBAL RESPONSE LENGTH` rule (1800 chars max for all responses) (2026-02-27)
 - [x] **NEW**: Dynamic capabilities intro — bot calls `list_systems` when asked "what can you do", lists only connected systems, describes cross-system compliance when multiple systems active (2026-02-27)
 - [x] **NEW**: Identity rebrand — removed "SOD compliance agent"; bot is now "Fivetran's compliance agent"; SOD is one capability, not the identity; explicit prohibition in system prompt (2026-02-27)
+- [x] **NEW**: Feedback Phase C — Correction embeddings (pgvector, MiniLM 384-dim) stored on every ❌ Wrong correction; cosine ANN search injects top-3 similar past corrections as few-shot context into every future query; `correction_embeddings` table + ivfflat index; `services/correction_service.py`; backfill via `scripts/embed_corrections.py`; feature flag `USE_CORRECTION_CONTEXT=true` (2026-02-27)
 
 ### 🚧 Known Issues
 
@@ -961,6 +1077,7 @@ Priority items:
 
 **Version History:**
 - v1.7 (2026-02-27): Response length management (auto-upload + truncation); dynamic capabilities intro (list_systems-driven); identity rebrand (compliance agent, not SOD agent); HARD LIMIT prompt constraints
+- v1.8 (2026-02-27): Feedback Phase C — correction embeddings + few-shot injection (correction_embeddings table, CorrectionService, embed_corrections.py backfill)
 - v1.6 (2026-02-27): Role risk matrix (17 roles, 153 pairs, 443 conflict rows); get_role_risk_matrix + list_violations tools; tool_router role_risk intent group; McKinsey partner voice; _trim_history API-400 fix
 - v1.5 (2026-02-27): FivetranChat-style formatting (clean prose, no emoji); feedback buttons 👎 👍 (commit 948f495)
 - v1.4 (2026-02-26): Feedback loop — Block Kit buttons, answer_feedback table, LangSmith human_rating, Redis cache bust on NEGATIVE (commit 547c187)

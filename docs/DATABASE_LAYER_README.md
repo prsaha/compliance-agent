@@ -1,445 +1,183 @@
-# Database Layer - Complete Implementation ✅
+# Database Layer — compliance-agent-v2
 
-## 🎉 What's Been Built
-
-The complete database layer is now implemented with:
-
-### 1. **SQLAlchemy ORM Models** (`models/database.py`)
-- ✅ User - NetSuite users
-- ✅ Role - NetSuite roles with permissions
-- ✅ UserRole - User-role assignments
-- ✅ SODRule - Segregation of Duties rules
-- ✅ Violation - Detected SOD violations
-- ✅ ComplianceScan - Scan execution history
-- ✅ AgentLog - Agent execution logs
-- ✅ Notification - Notification delivery log
-- ✅ AuditTrail - Compliance audit trail
-
-**Total**: 9 tables with relationships, indexes, and enums
-
-### 2. **Database Configuration** (`models/database_config.py`)
-- Connection management with pooling
-- Session factory with context managers
-- Automatic cleanup and error handling
-- pgvector extension support
-
-### 3. **Repository Pattern** (`repositories/`)
-- ✅ **UserRepository** - CRUD for users
-  - Upsert users (create or update)
-  - Bulk operations
-  - Search by name/email
-  - Get users with roles
-  - Assign/remove roles
-  - Find high-risk users (3+ roles)
-
-- ✅ **RoleRepository** - CRUD for roles
-  - Upsert roles with permissions
-  - Bulk operations
-  - Search by name
-  - Get admin/finance roles
-  - Filter by permission count
-
-- ✅ **ViolationRepository** - CRUD for violations
-  - Create violations
-  - Get by user/scan/rule
-  - Resolve violations
-  - Get open/critical violations
-  - Calculate risk scores
-  - Violation summary statistics
-
-### 4. **Scripts**
-- ✅ `scripts/init_database.py` - Initialize database tables
-- ✅ `scripts/sync_from_netsuite.py` - Sync NetSuite data to database
-- ✅ `tests/test_database.py` - Comprehensive test suite
+**Version:** 2.0 | **Updated:** 2026-03-10
 
 ---
 
-## 🚀 Quick Start
+## Overview
 
-### Prerequisites
+PostgreSQL 14+ with pgvector extension. SQLAlchemy ORM with a typed `BaseRepository[T]` pattern.
 
-**Option 1: Use PostgreSQL (Recommended)**
+- **17 tables** total (9 core + 8 added via migrations)
+- **14 repositories**, all extending `BaseRepository[T]`
+- **Bulk operations** via `bulk_insert_mappings` (single commit per batch)
+- **4 performance indexes** added in migration 011
+
+---
+
+## Tables
+
+### Core Tables (schema.sql)
+
+| Table | Description | Key Columns |
+|-------|-------------|-------------|
+| `users` | NetSuite users (1,932 active) | `netsuite_id`, `email`, `department`, `status` |
+| `roles` | NetSuite roles (35 tracked) | `netsuite_role_id`, `role_name`, `permissions` (JSONB) |
+| `user_roles` | User-role assignments | `user_id` FK, `role_id` FK, `assigned_at` |
+| `sod_rules` | 18 SOD rule definitions | `rule_code`, `severity`, `conflicting_permissions` |
+| `violations` | Detected SOD violations | `user_id`, `rule_id`, `scan_id`, `severity`, `status` |
+| `compliance_scans` | Scan execution history | `scan_type`, `status`, `started_at`, `completed_at` |
+| `agent_logs` | Agent execution logs | `agent_name`, `action`, `result` |
+| `notifications` | Notification delivery log | `recipient`, `channel`, `status` |
+| `audit_trail` | Compliance audit trail | `actor`, `action`, `target_id`, `timestamp` |
+| `user_reconciliations` | NetSuite ↔ Okta reconciliation | `netsuite_user_id` *(indexed v2)*, `okta_user_id` *(indexed v2)* |
+
+### Migration Tables
+
+| Table | Migration | Description |
+|-------|-----------|-------------|
+| `exceptions` | 005 | Approved SOD exceptions with expiry |
+| `conversation_summaries` | 006 | Haiku summaries, 90-day TTL, per-user context |
+| `answer_feedback` | 007 | Slack 👍/👎/🔧 feedback, LangSmith run_id |
+| `sod_permission_map` | 008 | Permission → SOD category mapping |
+| `role_pair_conflicts` | 009 | Precomputed conflict matrix (443 rows, all 35 roles) |
+| `correction_embeddings` | 010 | pgvector 384-dim MiniLM few-shot corrections |
+| `job_role_mappings` | unnumbered | Job title → canonical NetSuite roles (JSONB) |
+
+---
+
+## v2 Performance Indexes (migration 011)
+
+Four indexes that were missing from the original schema — applied with `CONCURRENTLY` to avoid table locks:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_violation_rule_id ON violations (rule_id);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_violation_scan_id ON violations (scan_id);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_recon_netsuite_user_id ON user_reconciliations (netsuite_user_id);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_recon_okta_user_id ON user_reconciliations (okta_user_id);
+```
+
+Apply:
 ```bash
-# Start PostgreSQL with Docker
-docker run -d \
-  --name compliance-postgres \
-  -e POSTGRES_USER=compliance_user \
-  -e POSTGRES_PASSWORD=compliance_pass \
-  -e POSTGRES_DB=compliance_db \
-  -p 5432:5432 \
-  postgres:16
-```
-
-**Option 2: Use SQLite (Testing)**
-```bash
-# Modify .env to use SQLite
-echo "DATABASE_URL=sqlite:///./compliance.db" >> .env
-```
-
-### Install Dependencies
-```bash
-pip install psycopg2-binary sqlalchemy
-```
-
-### Initialize Database
-```bash
-# Create all tables
-python3 scripts/init_database.py
-```
-
-**Output:**
-```
-================================================================================
-  SOD COMPLIANCE DATABASE INITIALIZATION
-================================================================================
-
-1. Testing database connection...
-   ✓ Connection successful
-
-2. Enabling pgvector extension...
-   ✓ pgvector enabled
-
-3. Creating database tables...
-   ✓ Tables created successfully
-
-4. Verifying tables...
-   ✓ Found 9 tables:
-     • agent_logs
-     • audit_trail
-     • compliance_scans
-     • notifications
-     • roles
-     • sod_rules
-     • user_roles
-     • users
-     • violations
-
-================================================================================
-  ✓ DATABASE INITIALIZATION COMPLETE
-================================================================================
-```
-
-### Sync Data from NetSuite
-```bash
-# Sync 100 users with full permissions
-python3 scripts/sync_from_netsuite.py --limit 100
-
-# Quick sync without permissions (faster)
-python3 scripts/sync_from_netsuite.py --limit 50 --no-permissions
-```
-
-**Output:**
-```
-================================================================================
-  SYNC FROM NETSUITE TO DATABASE
-================================================================================
-
-1. Initializing Data Collection Agent...
-   ✓ Agent ready
-
-2. Testing NetSuite connection...
-   ✓ Connected to NetSuite
-
-3. Testing database connection...
-   ✓ Connected to database
-
-4. Fetching 100 users from NetSuite...
-   ✓ Fetched 100 users in 1.45s
-
-5. Storing data in database...
-   • Upserting 3 roles...
-     ✓ 3 roles processed
-   • Upserting 100 users...
-     ✓ 100 users processed
-     ✓ 120 role assignments created
-
-6. Database statistics:
-   • Total users: 100
-   • Active users: 98
-   • Total roles: 3
-   • High-risk users (3+ roles): 1
-
-   Sample users in database:
-     • agent 001 (prabal.saha@fivetran.com) - 1 roles
-     • Robin Turner (robin.turner@fivetran.com) - 3 roles
-     • Aakash Saxena (aakash.saxena@fivetran.com) - 0 roles
-
-================================================================================
-  ✓ SYNC COMPLETE
-================================================================================
-```
-
-### Test Database Layer
-```bash
-python3 tests/test_database.py
-```
-
-**Output:**
-```
-████████████████████████████████████████████████████████████████████████████████
-█                       DATABASE LAYER TEST SUITE                              █
-████████████████████████████████████████████████████████████████████████████████
-
-================================================================================
-  TEST 1: Database Connection
-================================================================================
-
-✓ Database connection successful
-  URL: postgresql://compliance_user:***@localhost:5432/compliance_db
-
-================================================================================
-  TEST 2: User Repository
-================================================================================
-
-✓ Total users in database: 100
-✓ Active users: 98
-
-  Sample users:
-    • agent 001 (prabal.saha@fivetran.com) - 1 roles
-    • Robin Turner (robin.turner@fivetran.com) - 3 roles
-    • Aakash Saxena (aakash.saxena@fivetran.com) - 0 roles
-
-✓ Search test ('agent'): 1 results
-
-✓ High-risk users (3+ roles): 1
-  Top high-risk user:
-    • Robin Turner (robin.turner@fivetran.com)
-    • Roles: 3
-
-================================================================================
-  TEST SUMMARY
-================================================================================
-
-  ✓ PASS: Connection Test
-  ✓ PASS: User Repository
-  ✓ PASS: Role Repository
-  ✓ PASS: Violation Repository
-  ✓ PASS: Users with Roles
-
-  Results: 5/5 tests passed
-
-  🎉 All tests passed! Database layer is working.
-
-████████████████████████████████████████████████████████████████████████████████
+psql $DATABASE_URL -f database/migrations/011_add_performance_indexes.sql
 ```
 
 ---
 
-## 📊 Database Schema
+## Repository Pattern
 
-### Core Tables
+### BaseRepository[T]
 
-**users** - NetSuite users
-- id (UUID, PK)
-- user_id (String, unique) - NetSuite user ID
-- internal_id (String, unique)
-- name, email, status
-- department, subsidiary
-- Relationships: user_roles, violations
-
-**roles** - NetSuite roles
-- id (UUID, PK)
-- role_id (String, unique) - NetSuite role ID
-- role_name, is_custom
-- permissions (JSON) - Full permission list
-- permission_count (Integer)
-
-**user_roles** - Many-to-many user-role assignments
-- id (UUID, PK)
-- user_id (FK to users)
-- role_id (FK to roles)
-- assigned_at, assigned_by
-
-**violations** - SOD violations
-- id (UUID, PK)
-- user_id (FK to users)
-- rule_id (FK to sod_rules)
-- scan_id (FK to compliance_scans)
-- severity (CRITICAL/HIGH/MEDIUM/LOW)
-- status (OPEN/RESOLVED/etc.)
-- risk_score (0-100)
-- conflicting_roles (JSON)
-
-**compliance_scans** - Scan history
-- id (UUID, PK)
-- scan_type, status
-- started_at, completed_at
-- users_scanned, violations_found
-- Violation counts by severity
-
----
-
-## 🔧 Usage Examples
-
-### Working with Users
+All 14 repositories extend `BaseRepository[T]` in `repositories/base_repository.py`:
 
 ```python
-from models.database_config import get_db_config
-from repositories.user_repository import UserRepository
+from repositories.base_repository import BaseRepository
+from models.database import Violation
 
-# Get session
-db_config = get_db_config()
-session = db_config.get_session()
-repo = UserRepository(session)
-
-# Create/update user
-user = repo.upsert_user({
-    'user_id': 'john.doe',
-    'name': 'John Doe',
-    'email': 'john.doe@company.com',
-    'status': 'ACTIVE',
-    'department': 'Finance'
-})
-
-# Find user by email
-user = repo.get_user_by_email('robin.turner@fivetran.com')
-print(f"Found: {user.name}, Roles: {len(user.user_roles)}")
-
-# Get high-risk users
-high_risk = repo.get_high_risk_users(min_roles=3)
-print(f"High-risk users: {len(high_risk)}")
-
-# Search users
-results = repo.search_users('robin', limit=10)
-print(f"Found {len(results)} matching users")
-
-session.close()
+class ViolationRepository(BaseRepository[Violation]):
+    model = Violation
+    # Inherits: get_by_id, get_all, add, update, delete, bulk_create, bulk_update
 ```
 
-### Working with Roles
+### Bulk Operations (v2)
+
+**Critical:** Use bulk operations for batch writes — not individual commits.
 
 ```python
-from repositories.role_repository import RoleRepository
+# ✅ GOOD — single DB round-trip (v2 pattern)
+session.bulk_insert_mappings(Violation, list_of_dicts)
+session.commit()
 
-session = db_config.get_session()
-repo = RoleRepository(session)
-
-# Create/update role
-role = repo.upsert_role({
-    'role_id': '3',
-    'role_name': 'Administrator',
-    'is_custom': False,
-    'permissions': [...],  # List of permission dicts
-    'permission_count': 224
-})
-
-# Get admin roles
-admin_roles = repo.get_admin_roles()
-for role in admin_roles:
-    print(f"{role.role_name}: {role.permission_count} permissions")
-
-# Get high-permission roles
-high_perm = repo.get_roles_with_high_permissions(min_permissions=100)
-
-session.close()
+# ❌ BAD — N commits (pre-v2 pattern, now fixed)
+for v in violations:
+    session.add(Violation(**v))
+    session.commit()
 ```
 
-### Working with Violations
+`ViolationRepository.bulk_create_violations()` and `RoleRepository.bulk_upsert_roles()` use `bulk_insert_mappings`.
+
+---
+
+## Repository Reference
+
+| Repository | Key Methods |
+|-----------|-------------|
+| `UserRepository` | `upsert_user`, `get_by_email`, `get_users_with_roles`, `find_high_risk_users` |
+| `RoleRepository` | `bulk_upsert_roles` (single commit), `get_by_netsuite_id`, `get_finance_roles` |
+| `ViolationRepository` | `bulk_create_violations` (single commit), `get_open_violations`, `get_by_scan_id` |
+| `SODRuleRepository` | `get_by_rule_code`, `get_active_rules`, `get_by_severity` |
+| `ExceptionRepository` | `find_similar_exceptions` (bounded to 500 rows), `get_active_exceptions` |
+| `JobRoleMappingRepository` | `get_by_job_title`, `get_canonical_roles` |
+| `SyncMetadataRepository` | `get_latest_sync`, `create_sync_record`, `mark_complete` |
+| `UserReconciliationRepository` | `get_unreconciled`, `mark_reconciled` |
+| `AuditTrailRepository` | `log_action`, `get_recent_actions` |
+
+---
+
+## Cache Invalidation (v2)
+
+`CacheService` in `services/cache_service.py` has invalidation hooks for write paths:
 
 ```python
-from repositories.violation_repository import ViolationRepository
+cache.invalidate_user(user_id)        # clears all mcp:*:user_id keys
+cache.invalidate_role(role_id)        # clears all mcp:*:role_id keys  (v2)
+cache.invalidate_violations(scan_id)  # clears violation query cache   (v2)
+cache.invalidate_rules()              # clears all SOD rule cache       (v2)
+```
 
-session = db_config.get_session()
-repo = ViolationRepository(session)
+Call these from repository write methods to keep Redis consistent with DB.
 
-# Create violation
-violation = repo.create_violation({
-    'user_id': user.id,
-    'rule_id': rule.id,
-    'severity': 'CRITICAL',
-    'status': 'OPEN',
-    'risk_score': 95.0,
-    'title': 'Admin + Finance Controller roles',
-    'conflicting_roles': ['3', '1084']
-})
+---
 
-# Get open critical violations
-critical = repo.get_critical_violations(limit=10)
-for v in critical:
-    print(f"{v.title}: {v.user.name} - Risk: {v.risk_score}")
+## Session Management
 
-# Resolve violation
-repo.resolve_violation(
-    violation_id=str(violation.id),
-    resolved_by='compliance@company.com',
-    resolution_notes='Roles separated'
-)
+```python
+from models.database_config import DatabaseConfig
 
-# Get violation summary
-summary = repo.get_violation_summary()
-print(f"Total: {summary['total']}, Open: {summary['open']}")
-print(f"Critical: {summary['by_severity']['CRITICAL']}")
-
-session.close()
+# Context manager (recommended)
+with DatabaseConfig().get_session() as session:
+    repo = UserRepository(session)
+    user = repo.get_by_email("john@example.com")
+# Session auto-closed, rollback on exception
 ```
 
 ---
 
-## 🔄 Complete Data Pipeline
+## Common DB Checks
 
-```
-NetSuite RESTlet
-      ↓
-Data Collection Agent (agents/data_collector.py)
-      ↓
-User/Role Repositories (repositories/)
-      ↓
-PostgreSQL Database (9 tables)
-      ↓
-Analysis/Risk Assessment Agents (future)
+```bash
+# User counts
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM users WHERE status='ACTIVE';"
+
+# Violation summary
+psql $DATABASE_URL -c "SELECT severity, COUNT(*) FROM violations WHERE status='OPEN' GROUP BY severity;"
+
+# Recent syncs
+psql $DATABASE_URL -c "SELECT sync_type, status, started_at, users_synced FROM sync_metadata ORDER BY started_at DESC LIMIT 5;"
+
+# Role-pair conflicts
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM role_pair_conflicts;"  -- 443
+
+# Job role mappings
+psql $DATABASE_URL -c "SELECT job_title, department FROM job_role_mappings ORDER BY department, job_title;"
+
+# Check indexes are applied
+psql $DATABASE_URL -c "\d violations"  -- look for idx_violation_rule_id, idx_violation_scan_id
 ```
 
 ---
 
-## 📝 Next Steps
+## Known Pitfalls
 
-Now that the database layer is complete:
+| Pitfall | Issue | Fix |
+|---------|-------|-----|
+| `metadata` as column name | SQLAlchemy reserves this name | Use `sync_metadata`, `user_metadata` etc. |
+| Enum values lowercase | DB CHECK constraints expect UPPERCASE | Always use `SyncStatus.PENDING` (value = "PENDING") |
+| Insert violation before scan | FK violation: `violations.scan_id` references `compliance_scans` | Create `ComplianceScan` first, then violations |
+| page_size=1000 | NetSuite caps at 200, silently truncates | `page_size=200` in `netsuite_client.py` |
 
-1. ✅ **Database models** - DONE
-2. ✅ **Repositories** - DONE
-3. ✅ **Sync script** - DONE
-4. ⏭️  **Update Data Collection Agent** to automatically store data
-5. ⏭️  **Build Analysis Agent** to detect violations and store them
-6. ⏭️  **Build Risk Assessment Agent** to score violations
-7. ⏭️  **Add Celery tasks** for automated scans
-
----
-
-## 🎯 Summary
-
-**What Works:**
-- ✅ Complete ORM models with 9 tables
-- ✅ Repository pattern for data access
-- ✅ Database initialization
-- ✅ NetSuite → Database sync
-- ✅ Comprehensive test suite
-- ✅ High-risk user detection in database
-- ✅ Robin Turner stored as high-risk case
-
-**Files Created:**
-```
-models/
-├── __init__.py
-├── database.py              # 9 SQLAlchemy models
-└── database_config.py       # Connection management
-
-repositories/
-├── __init__.py
-├── user_repository.py       # User CRUD operations
-├── role_repository.py       # Role CRUD operations
-└── violation_repository.py  # Violation CRUD operations
-
-scripts/
-├── __init__.py
-├── init_database.py         # Initialize tables
-└── sync_from_netsuite.py    # Sync NetSuite data
-
-tests/
-└── test_database.py         # 5 comprehensive tests
-```
-
-**Status:** ✅ **Database Layer Complete & Tested**
+See `docs/LESSONS_LEARNED.md` Issues #1, #13, #14, #15 for full context.
 
 ---
 
-Last Updated: 2026-02-09
+**Last Updated:** 2026-03-10

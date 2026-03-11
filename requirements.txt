@@ -40,3 +40,16 @@ sendgrid==6.11.0
 pydantic-settings>=2.4.0,<3.0.0
 python-dateutil==2.8.2
 cryptography>=46.0.0
+
+# Resilience & Observability
+tenacity>=8.2.0           # Retry with exponential backoff
+pybreaker>=1.0.1          # Circuit breaker pattern
+structlog>=24.0.0         # Structured JSON logging
+python-json-logger>=2.0.7 # stdlib JSON log formatter
+
+# Config
+PyYAML>=6.0.1             # Load config/role_keywords.yaml
+
+# Admin Portal Auth
+python-jose[cryptography]>=3.3.0  # JWT tokens
+passlib[bcrypt]>=1.7.4           # Password hashing

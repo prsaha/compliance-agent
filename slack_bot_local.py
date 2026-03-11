@@ -16,6 +16,7 @@ import logging
 import threading
 import itertools
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, Optional, List
 import json
 import requests
@@ -25,13 +26,57 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 from dotenv import load_dotenv
 from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import pybreaker
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# ---------------------------------------------------------------------------
+# Structured JSON logging (production-grade)
+# ---------------------------------------------------------------------------
+try:
+    import structlog
+    from logging.handlers import RotatingFileHandler
+
+    _json_handler = logging.StreamHandler(sys.stdout)
+    _json_handler.setFormatter(logging.Formatter('%(message)s'))
+
+    _file_handler = RotatingFileHandler(
+        "/tmp/compliance_slack_bot.log",
+        maxBytes=10 * 1024 * 1024,  # 10 MB
+        backupCount=5,
+    )
+    _file_handler.setFormatter(logging.Formatter('%(message)s'))
+
+    logging.basicConfig(
+        level=logging.INFO,
+        handlers=[_json_handler, _file_handler],
+    )
+
+    structlog.configure(
+        processors=[
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.add_logger_name,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.JSONRenderer(),
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+    logger = structlog.get_logger(__name__)
+except ImportError:
+    # Graceful fallback if structlog/tenacity/pybreaker not yet installed
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(name)s %(levelname)s %(message)s',
+    )
+    logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Blocking-handler thread pool (prevents blocking the Slack Socket Mode loop)
+# ---------------------------------------------------------------------------
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="slack_handler")
 
 # Load environment variables
 load_dotenv()
@@ -55,6 +100,19 @@ MAX_SLACK_RESPONSE_CHARS = int(os.environ.get("SLACK_MAX_RESPONSE_CHARS", "2000"
 
 # Global variable to store MCP tools (fetched at startup)
 MCP_TOOLS: List[Dict[str, Any]] = []
+
+# ---------------------------------------------------------------------------
+# Circuit breaker for MCP server calls
+# Opens after 5 consecutive failures; resets after 60 s
+# ---------------------------------------------------------------------------
+try:
+    _mcp_circuit_breaker = pybreaker.CircuitBreaker(
+        fail_max=5,
+        reset_timeout=60,
+        name="mcp-server",
+    )
+except Exception:
+    _mcp_circuit_breaker = None  # pybreaker not installed; skip
 
 # ---------------------------------------------------------------------------
 # Phase A — Redis TTL Cache for MCP tool calls
@@ -133,6 +191,12 @@ def _get_langsmith_client():
 # Feature flag: set USE_CONV_SUMMARIES=false in .env to disable
 # ---------------------------------------------------------------------------
 USE_CONV_SUMMARIES = os.getenv("USE_CONV_SUMMARIES", "true").lower() == "true"
+
+# ---------------------------------------------------------------------------
+# Phase C — Correction Embeddings (few-shot context from past corrections)
+# Feature flag: set USE_CORRECTION_CONTEXT=false in .env to disable
+# ---------------------------------------------------------------------------
+USE_CORRECTION_CONTEXT = os.getenv("USE_CORRECTION_CONTEXT", "true").lower() == "true"
 
 _db_session_factory = None
 
@@ -348,15 +412,36 @@ def call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
             }
         }
 
-        response = requests.post(
-            f"{MCP_SERVER_URL}/mcp",
-            json=mcp_request,
-            headers={
-                "Content-Type": "application/json",
-                "X-API-Key": MCP_API_KEY
-            },
-            timeout=60
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=1, max=10),
+            retry=retry_if_exception_type((requests.ConnectionError, requests.Timeout)),
+            reraise=True,
         )
+        def _do_post():
+            _call = requests.post(
+                f"{MCP_SERVER_URL}/mcp",
+                json=mcp_request,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-API-Key": MCP_API_KEY,
+                },
+                timeout=60,
+            )
+            if _call.status_code >= 500:
+                raise requests.HTTPError(
+                    f"MCP server returned {_call.status_code}", response=_call
+                )
+            return _call
+
+        try:
+            if _mcp_circuit_breaker is not None:
+                response = _mcp_circuit_breaker.call(_do_post)
+            else:
+                response = _do_post()
+        except pybreaker.CircuitBreakerError:
+            logger.error(f"Circuit breaker OPEN for MCP server — skipping {tool_name}")
+            return f"❌ MCP server unavailable (circuit breaker open): {tool_name}"
 
         if response.status_code == 200:
             result = response.json()
@@ -745,6 +830,20 @@ def _save_feedback(signal: str, run_id: str, user_email: str, channel_id: str,
         except Exception as e:
             logger.warning(f"Redis cache bust failed: {e}")
 
+    # 4. Phase C — embed and store correction for future few-shot injection
+    if correction and USE_CORRECTION_CONTEXT:
+        try:
+            from services.correction_service import store_correction as _store_correction
+            _store_correction(
+                run_id=run_id or "",
+                user_email=user_email,
+                query_preview=query[:300] if query else "",
+                correction=correction,
+                tool_called=tool_called,
+            )
+        except Exception as e:
+            logger.warning(f"Phase C correction embedding failed: {e}")
+
 
 def _replace_feedback_block_with_confirmation(client, body: dict, signal: str) -> None:
     """
@@ -972,6 +1071,30 @@ def process_with_claude(user_message: str, user_email: str, mentioned_users: Opt
                     run.metadata["context_summaries_injected"] = prior_context.count("\n- ")
             except Exception:
                 pass
+
+        # Phase C — inject semantically similar past corrections as few-shot context
+        if USE_CORRECTION_CONTEXT:
+            try:
+                from services.correction_service import (
+                    find_similar_corrections as _find_corrections,
+                    format_corrections_for_context as _fmt_corrections,
+                )
+                past_corrections = _find_corrections(user_message)
+                if past_corrections:
+                    correction_block = _fmt_corrections(past_corrections)
+                    dynamic_context += f"\n\n{correction_block}"
+                    logger.info(
+                        f"Phase C: injected {len(past_corrections)} correction(s) "
+                        f"into context for {user_email}"
+                    )
+                    try:
+                        run = get_current_run_tree()
+                        if run:
+                            run.metadata["corrections_injected"] = len(past_corrections)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning(f"Phase C correction context injection failed: {e}")
 
         # SystemMessage with cache_control on the static portion
         system_msg = SystemMessage(content=[
@@ -1213,10 +1336,12 @@ def handle_mention(event, say, client):
         anim_thread.start()
 
         try:
-            response = process_with_claude(
+            future = _executor.submit(
+                process_with_claude,
                 message_text_clean, user_email, mentioned_users, thread_history,
-                langsmith_extra={"metadata": {"thread_id": thread_id, "conversation_id": thread_id}}
+                langsmith_extra={"metadata": {"thread_id": thread_id, "conversation_id": thread_id}},
             )
+            response = future.result()  # blocks this handler thread, not the Bolt event loop
         finally:
             stop_event.set()
             anim_thread.join(timeout=3)
@@ -1295,11 +1420,13 @@ def handle_dm(event, say, client):
 
         thread_id = channel  # DM channel ID is stable per user-pair
         try:
-            response = process_with_claude(
+            future = _executor.submit(
+                process_with_claude,
                 message_text, user_email, mentioned_users, thread_history,
-                prior_context=prior_context,
-                langsmith_extra={"metadata": {"thread_id": thread_id, "conversation_id": thread_id}}
+                prior_context,
+                langsmith_extra={"metadata": {"thread_id": thread_id, "conversation_id": thread_id}},
             )
+            response = future.result()
         finally:
             stop_event.set()
             anim_thread.join(timeout=3)
@@ -1498,12 +1625,14 @@ def handle_compliance_command(ack, command, say, client):
         if mentioned_users:
             logger.info(f"Mentioned users: {list(mentioned_users.values())}")
 
-        # Process with Claude
+        # Process with Claude (off Bolt handler thread via executor)
         thread_id = f"{command.get('channel_id', 'cmd')}-slash"
-        response = process_with_claude(
+        future = _executor.submit(
+            process_with_claude,
             command_text, user_email, mentioned_users,
-            langsmith_extra={"metadata": {"thread_id": thread_id, "conversation_id": thread_id}}
+            langsmith_extra={"metadata": {"thread_id": thread_id, "conversation_id": thread_id}},
         )
+        response = future.result()
 
         # Send response using Block Kit for proper Slack rendering
         say(text=response, blocks=format_as_blocks(response))
@@ -1516,7 +1645,14 @@ def handle_compliance_command(ack, command, say, client):
 def main():
     """Start the Socket Mode handler"""
     # Validate environment variables
-    required_vars = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "ANTHROPIC_API_KEY"]
+    required_vars = [
+        "SLACK_BOT_TOKEN",
+        "SLACK_APP_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "MCP_API_KEY",
+        "REDIS_URL",
+        "DATABASE_URL",
+    ]
     missing_vars = [var for var in required_vars if not os.environ.get(var)]
 
     if missing_vars:
@@ -1525,7 +1661,10 @@ def main():
         logger.error("SLACK_BOT_TOKEN=xoxb-your-bot-token")
         logger.error("SLACK_APP_TOKEN=xapp-your-app-token")
         logger.error("ANTHROPIC_API_KEY=sk-ant-your-key")
-        logger.error("MCP_SERVER_URL=http://localhost:8080 (optional)")
+        logger.error("MCP_SERVER_URL=http://localhost:8080")
+        logger.error("MCP_API_KEY=dev-key-12345")
+        logger.error("REDIS_URL=redis://localhost:6379/0")
+        logger.error("DATABASE_URL=postgresql://user:pass@localhost:5432/compliance_db")
         sys.exit(1)
 
     logger.info("Starting Compliance Agent Slack Bot...")

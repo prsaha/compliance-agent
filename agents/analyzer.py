@@ -12,6 +12,7 @@ This agent is responsible for:
 
 import logging
 import json
+import yaml
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,30 @@ from repositories.sod_rule_repository import SODRuleRepository
 from utils.langchain_callback import TokenTrackingCallback
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Load role keyword lists from config/role_keywords.yaml at import time.
+# Falls back to embedded defaults so the module works without the YAML file.
+# ---------------------------------------------------------------------------
+_ROLE_KEYWORDS_PATH = Path(__file__).parent.parent / "config" / "role_keywords.yaml"
+
+def _load_role_keywords() -> Dict[str, List[str]]:
+    defaults = {
+        "finance_keywords": ["Controller", "Finance", "Financial", "AP Manager", "AR Manager", "Treasury"],
+        "business_roles": ["AP Clerk", "AR Clerk", "Sales Representative", "Purchasing", "Buyer"],
+        "create_role_keywords": ["Create", "Entry"],
+        "approve_role_keywords": ["Approve", "Approval"],
+        "specific_roles": ["AP Clerk", "AR Clerk", "Sales Representative", "Financials"],
+    }
+    try:
+        with open(_ROLE_KEYWORDS_PATH) as f:
+            data = yaml.safe_load(f) or {}
+        return {k: data.get(k, defaults[k]) for k in defaults}
+    except Exception as exc:
+        logger.warning(f"Could not load role_keywords.yaml ({exc}) — using built-in defaults")
+        return defaults
+
+_RK = _load_role_keywords()
 
 # Static system prompt (identical for every user — eligible for prefix caching)
 _SOD_ANALYST_SYSTEM_PROMPT = (
@@ -292,8 +317,8 @@ class SODAnalysisAgent:
 
         # 1. Administrator + Financial Roles (CRITICAL)
         if 'Administrator' in user_role_names:
-            # Check for any Controller or finance-related roles
-            finance_keywords = ['Controller', 'Finance', 'Financial', 'AP Manager', 'AR Manager', 'Treasury']
+            # Check for any Controller or finance-related roles (keywords from config)
+            finance_keywords = _RK["finance_keywords"]
             conflicting = []
             for role in user_role_names:
                 if role != 'Administrator' and any(keyword in role for keyword in finance_keywords):
@@ -306,7 +331,7 @@ class SODAnalysisAgent:
 
         # 2. Administrator + AP/AR/Purchasing Roles (CRITICAL)
         if not rule_violated and 'Administrator' in user_role_names:
-            business_roles = ['AP Clerk', 'AR Clerk', 'Sales Representative', 'Purchasing', 'Buyer']
+            business_roles = _RK["business_roles"]
             conflicting = []
             for role in user_role_names:
                 if any(bus_role in role for bus_role in business_roles):
@@ -319,9 +344,10 @@ class SODAnalysisAgent:
 
         # 3. Create + Approve Role Combinations (HIGH)
         if not rule_violated:
-            # Check for roles with both "create" and "approve" keywords
-            create_roles = [role for role in user_role_names if 'Create' in role or 'Entry' in role]
-            approve_roles = [role for role in user_role_names if 'Approve' in role or 'Approval' in role]
+            create_kws = _RK["create_role_keywords"]
+            approve_kws = _RK["approve_role_keywords"]
+            create_roles = [role for role in user_role_names if any(k in role for k in create_kws)]
+            approve_roles = [role for role in user_role_names if any(k in role for k in approve_kws)]
 
             if create_roles and approve_roles and rule['rule_type'] == 'FINANCIAL':
                 rule_violated = True
@@ -330,8 +356,7 @@ class SODAnalysisAgent:
 
         # 4. Legacy IT_ACCESS check for specific business roles
         if not rule_violated and rule['rule_type'] == 'IT_ACCESS' and 'Administrator' in user_role_names:
-            # Special check for admin + specific business roles
-            specific_roles = ['AP Clerk', 'AR Clerk', 'Sales Representative', 'Financials']
+            specific_roles = _RK["specific_roles"]
             conflicting = [role for role in user_role_names if role in specific_roles]
             if conflicting:
                 rule_violated = True
@@ -392,7 +417,7 @@ class SODAnalysisAgent:
             return violation_data
         except Exception as e:
             logger.error(f"Failed to store violation: {str(e)}")
-            return violation_data
+            return None
 
     def _has_permission(self, permission_name: str, user_permissions: set) -> bool:
         """

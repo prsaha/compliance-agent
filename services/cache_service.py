@@ -350,6 +350,71 @@ class CacheService:
         logger.info(f"Invalidated {total_deleted} cache entries for user: {user_id}")
         return total_deleted
 
+    def invalidate_role(self, role_id: str) -> int:
+        """
+        Invalidate all cached data for a role (call after role create/update/delete).
+
+        Args:
+            role_id: Role ID or role name
+
+        Returns:
+            Number of keys deleted
+        """
+        patterns = [
+            f"compliance:role_conflicts:*{role_id}*",
+            f"compliance:role_permissions:*{role_id}*",
+            f"compliance:role_risk:*{role_id}*",
+        ]
+
+        total_deleted = 0
+        for pattern in patterns:
+            total_deleted += self.delete_pattern(pattern)
+
+        logger.info(f"Invalidated {total_deleted} cache entries for role: {role_id}")
+        return total_deleted
+
+    def invalidate_violations(self, scan_id: Optional[str] = None) -> int:
+        """
+        Invalidate violation cache entries. Pass scan_id to bust only a specific
+        scan's results; omit to bust all violation caches.
+
+        Args:
+            scan_id: Optional scan UUID
+
+        Returns:
+            Number of keys deleted
+        """
+        if scan_id:
+            patterns = [f"compliance:violations:*{scan_id}*"]
+        else:
+            patterns = ["compliance:violations:*", "compliance:violation_stats:*"]
+
+        total_deleted = 0
+        for pattern in patterns:
+            total_deleted += self.delete_pattern(pattern)
+
+        logger.info(
+            f"Invalidated {total_deleted} violation cache entries"
+            + (f" for scan {scan_id}" if scan_id else "")
+        )
+        return total_deleted
+
+    def invalidate_rules(self) -> int:
+        """
+        Invalidate all SOD rule cache entries (call after rule create/update/delete).
+
+        Returns:
+            Number of keys deleted
+        """
+        patterns = ["compliance:sod_rules:*", "compliance:rule_details:*"]
+
+        total_deleted = 0
+        for pattern in patterns:
+            total_deleted += self.delete_pattern(pattern)
+
+        logger.info(f"Invalidated {total_deleted} SOD rule cache entries")
+        return total_deleted
+
     def get_stats(self) -> Dict[str, Any]:
         """
         Get cache statistics

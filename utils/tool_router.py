@@ -28,6 +28,9 @@ TOOL_GROUPS: Dict[str, List[str]] = {
         "validate_job_role",
         "get_role_conflicts",
         "recommend_roles_for_job_title",
+        "perform_access_review",
+        "check_permission_conflict",
+        "list_all_users",
     ],
     "violation_query": [
         "get_violation_stats",
@@ -43,6 +46,14 @@ TOOL_GROUPS: Dict[str, List[str]] = {
         "list_active_exceptions",
         "approve_exception",
         "revoke_exception",
+        "record_exception_approval",
+        "find_similar_exceptions",
+        "list_approved_exceptions",
+        "record_exception_violation",
+        "get_exception_effectiveness_stats",
+        "detect_exception_violations",
+        "conduct_exception_review",
+        "get_exceptions_for_review",
     ],
     "sod_rules": [
         "query_sod_rules",
@@ -71,6 +82,7 @@ TOOL_GROUPS: Dict[str, List[str]] = {
         "generate_compliance_report",
         "get_org_risk_assessment",
         "export_report",
+        "generate_violation_report",
     ],
     "system": [
         "list_systems",
@@ -78,6 +90,9 @@ TOOL_GROUPS: Dict[str, List[str]] = {
         "trigger_manual_sync",
         "get_sync_status",
         "initialize_session",
+        "start_collection_agent",
+        "stop_collection_agent",
+        "get_collection_agent_status",
     ],
     "remediation": [
         "remediate_violation",

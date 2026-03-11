@@ -1,0 +1,39 @@
+# role_keywords.yaml
+#
+# Keyword lists used by agents/analyzer.py for role-based SOD violation detection.
+# Edit this file to add or remove keywords without touching Python code.
+# Keys must match the variable names referenced in analyzer.py.
+
+# Roles considered finance-related (triggers CRITICAL Administrator + Finance check)
+finance_keywords:
+  - Controller
+  - Finance
+  - Financial
+  - AP Manager
+  - AR Manager
+  - Treasury
+
+# Business transaction roles that conflict with Administrator (CRITICAL)
+business_roles:
+  - AP Clerk
+  - AR Clerk
+  - Sales Representative
+  - Purchasing
+  - Buyer
+
+# Roles containing "create/entry" semantics (HIGH: create + approve conflict)
+create_role_keywords:
+  - Create
+  - Entry
+
+# Roles containing "approve" semantics (HIGH: create + approve conflict)
+approve_role_keywords:
+  - Approve
+  - Approval
+
+# Specific business roles that conflict with Administrator in IT_ACCESS rules
+specific_roles:
+  - AP Clerk
+  - AR Clerk
+  - Sales Representative
+  - Financials

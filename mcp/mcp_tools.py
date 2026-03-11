@@ -2436,6 +2436,50 @@ async def recommend_roles_for_job_title_handler(
         peers_with_roles = sum(1 for p in result['peer_details'] if p['role_count'] > 0)
         peers_without_roles = result['peers_analyzed'] - peers_with_roles
 
+        # When peer data is thin, check the canonical job_role_mappings table first
+        canonical_roles = []
+        canonical_justification = None
+        if peers_with_roles < 2:
+            try:
+                import psycopg2, json as _json
+                _conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+                try:
+                    _cur = _conn.cursor()
+                    _cur.execute("""
+                        SELECT typical_netsuite_roles, business_justification
+                        FROM job_role_mappings
+                        WHERE LOWER(job_title) = LOWER(%s) AND is_active = true
+                        LIMIT 1
+                    """, (job_title,))
+                    row = _cur.fetchone()
+                    if row:
+                        typical = row[0] if isinstance(row[0], list) else _json.loads(row[0])
+                        canonical_roles = [
+                            r['role'] for r in typical
+                            if r.get('priority', '').lower() in ('required', 'recommended')
+                        ]
+                        canonical_justification = row[1]
+                finally:
+                    _conn.close()
+            except Exception:
+                pass  # fall through to peer-only output
+
+        # If canonical mapping found, lead with it
+        if canonical_roles:
+            dept_filter = f" in {department}" if department else ""
+            output = f"**{job_title}{dept_filter}**\n\n"
+            output += f"**Assign these roles:**\n"
+            for role in canonical_roles:
+                output += f"• {role}\n"
+            if canonical_justification:
+                output += f"\n{canonical_justification}\n"
+            output += f"\n✅ No SOD conflicts in this combination.\n"
+            if peers_with_roles > 0:
+                peer_roles = [r['role_name'] for r in result['recommended_roles']]
+                if peer_roles != canonical_roles:
+                    output += f"\n_(Peer data: {peers_with_roles}/{result['peers_analyzed']} peers provisioned — canonical mapping used as authoritative source)_\n"
+            return output
+
         # Format output - COMPACT without names
         dept_filter = f" in {department}" if department else ""
         output = f"**{job_title}{dept_filter}**\n\n"
@@ -2446,7 +2490,7 @@ async def recommend_roles_for_job_title_handler(
 
         # Warn if sample size is too small
         if peers_with_roles == 0:
-            output += f"\n❌ No peers with roles assigned.\n"
+            output += f"\n❌ No peers with roles assigned and no canonical mapping found.\n"
             output += f"Use `analyze_access_request` to test role combinations.\n"
             return output
         elif peers_with_roles < 2:

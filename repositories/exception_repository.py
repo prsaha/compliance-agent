@@ -242,11 +242,20 @@ class ExceptionRepository:
         Returns:
             List of (exception, similarity_score) tuples, sorted by similarity desc
         """
+        # Cap the candidate pool to avoid loading the entire table into memory.
+        # 500 most-recently-approved active exceptions is a safe upper bound for
+        # Python-side Jaccard scoring; adjust MAX_CANDIDATES via env var if needed.
+        MAX_CANDIDATES = int(__import__("os").getenv("EXCEPTION_SIMILARITY_MAX_CANDIDATES", "500"))
+
         try:
-            # Get all exceptions with matching status
-            exceptions = self.session.query(ApprovedExceptionModel).filter(
-                ApprovedExceptionModel.status == status
-            ).all()
+            # Fetch only the most recent active exceptions (bounded query)
+            exceptions = (
+                self.session.query(ApprovedExceptionModel)
+                .filter(ApprovedExceptionModel.status == status)
+                .order_by(desc(ApprovedExceptionModel.approved_at))
+                .limit(MAX_CANDIDATES)
+                .all()
+            )
 
             role_ids_set = set(role_ids)
             similarities = []

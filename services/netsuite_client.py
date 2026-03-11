@@ -141,7 +141,7 @@ class NetSuiteClient:
         self,
         include_permissions: bool = True,
         status: str = 'ACTIVE',
-        page_size: int = 1000,
+        page_size: int = 200,
         last_modified_after: Optional[datetime] = None
     ) -> Dict[str, Any]:
         """

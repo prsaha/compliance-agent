@@ -8,7 +8,7 @@ import logging
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 
 from models.database import Role
 
@@ -137,7 +137,8 @@ class RoleRepository:
 
     def bulk_upsert_roles(self, roles_data: List[Dict[str, Any]]) -> int:
         """
-        Bulk create or update roles
+        Bulk create or update roles using two bulk operations (insert + update)
+        instead of N individual commits, dramatically reducing DB round-trips.
 
         Args:
             roles_data: List of role data dictionaries
@@ -145,17 +146,58 @@ class RoleRepository:
         Returns:
             Number of roles processed
         """
-        count = 0
-        for role_data in roles_data:
-            try:
-                self.upsert_role(role_data)
-                count += 1
-            except Exception as e:
-                logger.error(f"Error upserting role {role_data.get('role_name')}: {str(e)}")
-                self.session.rollback()
+        if not roles_data:
+            return 0
 
-        logger.info(f"Bulk upserted {count}/{len(roles_data)} roles")
-        return count
+        incoming_ids = [rd["role_id"] for rd in roles_data]
+        existing_roles = (
+            self.session.query(Role)
+            .filter(Role.role_id.in_(incoming_ids))
+            .all()
+        )
+        existing_id_set = {r.role_id for r in existing_roles}
+
+        inserts = []
+        updates = []
+        now = datetime.utcnow()
+
+        for rd in roles_data:
+            if rd["role_id"] in existing_id_set:
+                updates.append({
+                    "role_id": rd["role_id"],
+                    "role_name": rd.get("role_name"),
+                    "is_custom": rd.get("is_custom", False),
+                    "description": rd.get("description"),
+                    "permission_count": rd.get("permission_count", 0),
+                    "permissions": rd.get("permissions", []),
+                    "updated_at": now,
+                })
+            else:
+                inserts.append({
+                    "role_id": rd["role_id"],
+                    "role_name": rd["role_name"],
+                    "is_custom": rd.get("is_custom", False),
+                    "description": rd.get("description"),
+                    "permission_count": rd.get("permission_count", 0),
+                    "permissions": rd.get("permissions", []),
+                })
+
+        try:
+            if inserts:
+                self.session.bulk_insert_mappings(Role, inserts)
+            if updates:
+                self.session.bulk_update_mappings(Role, updates)
+            self.session.commit()
+            count = len(inserts) + len(updates)
+            logger.info(
+                f"Bulk upserted {count}/{len(roles_data)} roles "
+                f"({len(inserts)} inserts, {len(updates)} updates)"
+            )
+            return count
+        except Exception as e:
+            logger.error(f"Bulk role upsert failed: {str(e)}")
+            self.session.rollback()
+            return 0
 
     def search_roles(self, search_term: str, limit: int = 100) -> List[Role]:
         """

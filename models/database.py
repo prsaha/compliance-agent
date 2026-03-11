@@ -273,6 +273,8 @@ class Violation(Base):
     __table_args__ = (
         Index('idx_violation_status_severity', 'status', 'severity'),
         Index('idx_violation_user_status', 'user_id', 'status'),
+        Index('idx_violation_rule_id', 'rule_id'),
+        Index('idx_violation_scan_id', 'scan_id'),
     )
 
     def __repr__(self):
@@ -533,6 +535,8 @@ class UserReconciliation(Base):
         Index('idx_recon_email', 'email'),
         Index('idx_recon_requires_action', 'requires_action'),
         Index('idx_recon_risk_level', 'risk_level'),
+        Index('idx_recon_netsuite_user_id', 'netsuite_user_id'),
+        Index('idx_recon_okta_user_id', 'okta_user_id'),
     )
 
     def __repr__(self):
